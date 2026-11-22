@@ -4,9 +4,9 @@ Runs the recompiled game on iPhone and iPad. Unlike the Mac app, nothing is comp
 (iOS forbids it): the game code is generated on the Mac from your own copy and linked into the app.
 
 ## Variants
-- `tb` (default): software renderer, `popTB.exe` -> app "Populous TB" (`com.unionworx.openpoptb`).
+- `tb` (default): software renderer, `popTB.exe` -> app "Populous TB" (`io.github.christophercarranza.openpoptb`).
 - `d3d`: Direct3D build, `D3DPopTB.exe`, 3D scene at the screen's resolution -> "Populous 3D"
-  (`com.unionworx.openpoptb.d3d`). Needs SDL_GPU (Apple GPU family 3+). In the simulator
+  (`io.github.christophercarranza.openpoptb.d3d`). Needs SDL_GPU (Apple GPU family 3+). In the simulator
   `build_ios.sh sim` applies `sdl-simulator-gpu.patch` to the local SDL copy, because the
   simulator's GPU reports no Apple family.
 
@@ -24,7 +24,10 @@ POPTB_TEAM=<team id> ios/build_ios.sh xcode                    # build-xcode/ope
 POPTB_TEAM=<team id> POPTB_VARIANT=d3d ios/build_ios.sh xcode  # build-xcode-d3d/openpoptb_ios.xcodeproj
 ```
 Open the project, pick the `PopulousTB` scheme and your iPhone/iPad as destination, then Run.
-Signing is automatic with the team given (or pick one under Signing & Capabilities). Generating the
+Signing is automatic with the team given (or pick one under Signing & Capabilities). A free
+Personal Team works (add your Apple ID in Xcode > Settings > Accounts): the app needs no special
+entitlement, but the install expires after 7 days (Run again to renew) and a free team can have at
+most 3 of its apps on a device. Generating the
 project takes a few minutes (thousands of generated functions); re-run the command after pulling
 changes, the folder is disposable.
 
@@ -36,7 +39,7 @@ The app reads the game from its `Documents/Game` folder (visible in the Files ap
 saves land there too). Copy the game folder in once, e.g.:
 ```sh
 xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
-  --domain-identifier com.unionworx.openpoptb --source <game folder> --destination Documents/Game
+  --domain-identifier io.github.christophercarranza.openpoptb --source <game folder> --destination Documents/Game
 ```
 
 ## Touch input

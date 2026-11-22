@@ -12,7 +12,7 @@ P="$(cd "$(dirname "$0")/.." && pwd)"
 KIND="${1:-sim}"
 GAME="${2:-$HOME/Library/Application Support/OpenPopTB/Game}"
 VARIANT="${POPTB_VARIANT:-tb}"
-if [ "$VARIANT" = d3d ]; then ID="${POPTB_BUNDLE_ID:-com.unionworx.openpoptb.d3d}"; SUF=-d3d; else ID="${POPTB_BUNDLE_ID:-com.unionworx.openpoptb}"; SUF=; fi
+if [ "$VARIANT" = d3d ]; then ID="${POPTB_BUNDLE_ID:-io.github.christophercarranza.openpoptb.d3d}"; SUF=-d3d; else ID="${POPTB_BUNDLE_ID:-io.github.christophercarranza.openpoptb}"; SUF=; fi
 export PATH="$P/.venv/bin:$PATH"
 if [ "$VARIANT" = d3d ] && [ ! -f "$P/gen_d3d/table.c" ]; then
   echo "== recompiling D3DPopTB.exe"
