@@ -174,6 +174,11 @@ static void debug_cmds(void) {
                         fprintf(out, " %08x", ad);
                 fprintf(out, "\n");
             }
+        } else if (!strncmp(line, "stat", 4)) {
+#if TARGET_OS_IPHONE
+            extern int g_home_count, g_touch_count;
+            fprintf(out, "dbg stat: cursor moves %d, homings %d, cursor (%d,%d)\n", g_touch_count, g_home_count, (int)vx, (int)vy);
+#endif
         } else if (!strncmp(line, "key ", 4)) {
             char nm[64] = ""; sscanf(line + 4, "%63s", nm);
             SDL_Event ev; memset(&ev, 0, sizeof ev);
@@ -238,6 +243,7 @@ static void script_tick(void) {
 void plat_init(void) {
 #if TARGET_OS_IPHONE
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");   // touches are handled as gestures (ios/touch_ios.inc)
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS)) rt_fatal("SDL_Init: %s", SDL_GetError());
 #if TARGET_OS_IPHONE
@@ -287,6 +293,10 @@ static inline uint32_t rgb565_to_xrgb(uint32_t c) {
     return ((r << 3 | r >> 2) << 16) | ((g << 2 | g >> 4) << 8) | (b << 3 | b >> 2);
 }
 
+#if TARGET_OS_IPHONE
+static int frame_held(void);
+static void touch_draw_overlay(void);
+#endif
 // rgba holds the game-resolution frame (alpha ignored); presents, then takes the requested screenshots
 static uint32_t last_present;
 static void finish_frame(int w, int h) {
@@ -304,12 +314,18 @@ static void finish_frame(int w, int h) {
         if (s) { SDL_SaveBMP(s, p); SDL_DestroySurface(s); }
         if (g_shot_path && frames == g_shot_frame) fprintf(stderr, "screenshot saved to %s (frame %d)\n", p, frames);
     }
+#if TARGET_OS_IPHONE
+    touch_draw_overlay();
+#endif
     SDL_RenderPresent(ren);
     last_present = now_ms();
     if (rt_verbose > 1) { static int n; if (n++ % 10 == 0) LOG("[%u] present #%d %dx%d", now_ms() % 100000, n, w, h); }
 }
 
 void plat_present(const uint8_t *pix, int w, int h, int pitch, const uint32_t *pal) {
+#if TARGET_OS_IPHONE
+    if (frame_held()) return;   // the cursor is being re-homed: keep showing the previous frame
+#endif
     set_size(w, h);
     for (int y = 0; y < h; y++) {
         const uint8_t *s = pix + (size_t)y * pitch;
@@ -325,6 +341,9 @@ void plat_present(const uint8_t *pix, int w, int h, int pitch, const uint32_t *p
 }
 
 void plat_present_hybrid(const uint16_t *pix, int w, int h, int pitch, const uint8_t *mask) {
+#if TARGET_OS_IPHONE
+    if (frame_held()) return;
+#endif
     set_size(w, h);
     int iw, ih;
     SDL_GPUTexture *img = gpu_image(&iw, &ih);
@@ -429,82 +448,18 @@ static void mouse_button(int b, int down) {
     msgq_post(g_hwnd, msgs[b][down], mk_state(), (uint32_t)(g_mouse_x & 0xffff) | ((uint32_t)g_mouse_y << 16));
 }
 
+// sends a key as the keyboard would (DirectInput + WM_KEYDOWN/UP, WM_CHAR for control keys)
+static void send_key(SDL_Scancode sc, int down) {
+    const KeyMap *k = key_of(sc);
+    if (!k) return;
+    di_push_key(k->dik, down);
+    uint32_t lp = 1 | ((uint32_t)(k->dik & 0x7f) << 16) | ((k->dik & 0x80) ? 1u << 24 : 0) | (down ? 0 : 0xC0000000u);
+    msgq_post(g_hwnd, down ? 0x100 : 0x101, k->vk, lp);
+    if (down && (k->vk == 0x0D || k->vk == 0x08 || k->vk == 0x1B || k->vk == 0x09)) msgq_post(g_hwnd, 0x102, k->vk, lp);
+}
+
 #if TARGET_OS_IPHONE
-// Touch: the cursor jumps to the finger, and the press follows TOUCH_PRESS_MS later so the game sees
-// the move in an earlier DirectInput batch than the click (same reason as plat_script's 80 ms gap).
-// A second finger turns the gesture into a right click (two-finger tap).
-// Homing: some screens (e.g. world select) keep their own cursor, fed only by relative deltas, so our
-// position and theirs drift apart. Each touch first sends a huge up-left delta, which pins every game
-// cursor against the top-left corner (the game clamps), then the exact distance to the finger.
-#define TOUCH_PRESS_MS 40
-#define TOUCH_HOME_MS 40
-static int touch_press_pending, touch_release_after, touch_right, fingers;
-static int touch_phase;          // 1: homed, waiting to move to the target; 0: in sync
-static float touch_tx, touch_ty;
-static uint32_t touch_down_ms;
-static void raw_delta(int dx, int dy) {
-    if (dx) { di_mouse_dx += dx; di_push_mouse(0, (uint32_t)dx); }
-    if (dy) { di_mouse_dy += dy; di_push_mouse(4, (uint32_t)dy); }
-}
-static void post_move(void) {
-    msgq_post(g_hwnd, 0x200, mk_state(), (uint32_t)(g_mouse_x & 0xffff) | ((uint32_t)g_mouse_y << 16));
-}
-static void win_to_game(float wx, float wy, float *x, float *y) {
-    SDL_RenderCoordinatesFromWindow(ren, wx, wy, x, y);
-    if (*x < 0) *x = 0; if (*y < 0) *y = 0;
-    if (*x > tex_w - 1) *x = (float)(tex_w - 1); if (*y > tex_h - 1) *y = (float)(tex_h - 1);
-}
-static void touch_begin(float gx, float gy) {   // game coordinates
-    if (up_pending[0]) mouse_button(0, 0);
-    raw_delta(-4096, -4096);
-    vx = vy = 0; g_mouse_x = g_mouse_y = 0;
-    touch_tx = gx; touch_ty = gy;
-    touch_phase = 1;
-    touch_press_pending = 1; touch_release_after = 0;
-    touch_down_ms = now_ms();
-}
-static void touch_drag(float gx, float gy) {
-    if (touch_phase) { touch_tx = gx; touch_ty = gy; return; }
-    vmove(gx, gy);
-    post_move();
-}
-static void touch_end(void) {
-    if (touch_press_pending) touch_release_after = 1;
-    else if (now_ms() - down_ms[0] < MIN_CLICK_MS) up_pending[0] = 1;
-    else mouse_button(0, 0);
-}
-// popTB.exe 1.01: the DirectInput mouse thread's object (thread parameter 0x973e94; D3DPopTB.exe: 0xd0595c) holds the cursor clamp
-// rect at +0x38..+0x44 (menus: the whole screen; in a level: the 512x384 view, 64,48-576,432). Every copy of
-// the cursor the game keeps clamps to it, so after homing they all sit at its top-left corner, not at (0,0).
-static void cursor_home_corner(int *x0, int *y0) {
-    extern const char *g_exe_name;
-    *x0 = *y0 = 0;
-    uint32_t o;
-    if (!strcasecmp(g_exe_name, "popTB.exe")) o = 0x973e94u;
-    else if (!strcasecmp(g_exe_name, "D3DPopTB.exe")) o = 0xd0595cu;   // same object layout
-    else return;
-    int a = (int32_t)rd32(o + 0x38), b = (int32_t)rd32(o + 0x3c), c = (int32_t)rd32(o + 0x40), d = (int32_t)rd32(o + 0x44);
-    if (a < 0 || b < 0 || c <= a || d <= b || c > 2048 || d > 2048) return;
-    *x0 = a; *y0 = b;
-}
-void touch_script_tap(float gx, float gy) { touch_begin(gx, gy); touch_release_after = 1; }
-static void touch_tick(void) {
-    uint32_t t = now_ms();
-    if (touch_phase == 1 && t - touch_down_ms >= TOUCH_HOME_MS) {
-        touch_phase = 0;
-        int x0, y0; cursor_home_corner(&x0, &y0);
-        vx = (float)x0; vy = (float)y0;   // where homing left the game's cursor
-        vmove(touch_tx, touch_ty);         // the exact distance from there to the finger
-        post_move();
-        touch_down_ms = t;
-    }
-    if (!touch_phase && touch_press_pending && t - touch_down_ms >= TOUCH_PRESS_MS) {
-        touch_press_pending = 0;
-        down_ms[0] = t;
-        mouse_button(0, 1);
-        if (touch_release_after) { touch_release_after = 0; up_pending[0] = 1; }
-    }
-}
+#include "../ios/touch_ios.inc"
 #endif
 
 void plat_pump(void) {
@@ -519,42 +474,7 @@ void plat_pump(void) {
         if (up_pending[b] && now_ms() - down_ms[b] >= MIN_CLICK_MS) mouse_button(b, 0);
     while (SDL_PollEvent(&e)) {
 #if TARGET_OS_IPHONE
-        if (e.type == SDL_EVENT_FINGER_DOWN) {
-            if (++fingers == 2 && !touch_right) {
-                // two-finger tap: cancel the pending/held left press, click right instead
-                touch_right = 1;
-                if (touch_press_pending) touch_press_pending = touch_release_after = 0;
-                else if (di_mouse_btn[0]) mouse_button(0, 0);
-                down_ms[1] = now_ms();
-                mouse_button(1, 1);
-                up_pending[1] = 1;
-            }
-            continue;
-        }
-        if (e.type == SDL_EVENT_FINGER_UP || e.type == SDL_EVENT_FINGER_CANCELED) {
-            if (fingers > 0) fingers--;
-            if (fingers == 0) touch_right = 0;
-            continue;
-        }
-        if (e.type == SDL_EVENT_MOUSE_MOTION && e.motion.which == SDL_TOUCH_MOUSEID) {
-            // SDL sends the touch-down position as motion before the press: only drags matter here
-            if (!touch_right && di_mouse_btn[0] | touch_press_pending) {
-                float x, y; win_to_game(e.motion.x, e.motion.y, &x, &y); touch_drag(x, y);
-            }
-            continue;
-        }
-        if ((e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) && e.button.which == SDL_TOUCH_MOUSEID) {
-            if (touch_right) continue;
-            if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) { float x, y; win_to_game(e.button.x, e.button.y, &x, &y); touch_begin(x, y); }
-            else touch_end();
-            continue;
-        }
-        if (e.type == SDL_EVENT_MOUSE_MOTION) {
-            // iPad pointer (trackpad/mouse): absolute, like the system cursor
-            float x, y; win_to_game(e.motion.x, e.motion.y, &x, &y);
-            vmove(x, y); post_move();
-            continue;
-        }
+        if (touch_event(&e)) continue;
 #endif
         switch (e.type) {
         case SDL_EVENT_QUIT:

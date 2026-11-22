@@ -43,15 +43,28 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
   --domain-identifier com.unionworx.openpoptb --source <game folder> --destination Documents/Game
 ```
 
-## Touch input
-The game only reads relative mouse motion and keeps its own cursor per screen, each clamped to a
-rect (whole screen in menus, the 512x384 view in a level). A touch first sends a huge up-left
-motion ("homing") so every cursor pins to its rect's corner, then the distance from that corner
-(read from the mouse thread object: `popTB.exe` 0x973e94, `D3DPopTB.exe` 0xd0595c, rect at +0x38)
-to the finger; the press follows 40 ms later. Two-finger tap = right click.
+## Touch input (ios/touch_ios.inc)
+| Gesture | Does |
+|---|---|
+| Tap | left click (on release, so a drag never clicks) |
+| Long press (0.5 s) | right click (query) |
+| Two-finger tap | right click |
+| One-finger drag | scroll the map, joystick style (arrows / Ctrl+arrows held while dragged) |
+| Two-finger sideways drag | rotate the camera |
+| Pinch / spread | zoom out / in |
+| Buttons, top right | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9) |
+
+An iPad trackpad or mouse moves the cursor directly.
+
+The game reads only relative mouse motion and keeps its own cursor per screen, each clamped to a
+rect (whole screen in menus, 64,48-576,432 in a software-rendered level), read from the mouse thread
+object (`popTB.exe` 0x973e94, `D3DPopTB.exe` 0xd0595c: cursor at +0x20, rect at +0x38). When the
+game's cursor matches ours the move is sent directly; otherwise ("homing") a huge up-left motion pins
+every cursor to the rect's corner, then the distance from that corner to the finger is sent. Frames
+drawn while homing are not shown, so the cursor never visibly jumps to the corner.
 
 ## Debugging
 `POPTB_DEBUG_CMDS=1` makes the app read commands from `Documents/poptb_cmd.txt` twice a second and
 append results to `Documents/poptb_dbg.txt`: `find X Y T`, `filt X Y T`, `peek ADDR N`,
-`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`. The input script (`--script`) also takes
+`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `stat` (cursor moves / homings). The input script (`--script`) also takes
 `ttap:x,y` (touch tap in game coordinates).
