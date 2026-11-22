@@ -52,7 +52,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | One-finger drag | scroll the map, joystick style (arrows / Ctrl+arrows held while dragged) |
 | Two-finger sideways drag | rotate the camera |
 | Pinch / spread | zoom out / in |
-| Buttons, top right | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9) |
+| Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9) |
 
 An iPad trackpad or mouse moves the cursor directly.
 
@@ -63,8 +63,12 @@ game's cursor matches ours the move is sent directly; otherwise ("homing") a hug
 every cursor to the rect's corner, then the distance from that corner to the finger is sent. Frames
 drawn while homing are not shown, so the cursor never visibly jumps to the corner.
 
+The buttons show only while a level is loaded: the game's mode word (`popTB.exe` 0x599ab4,
+`D3DPopTB.exe` 0x5d45a8) is 1 in menus, world select and cutscenes, 3 in a level.
+
 ## Debugging
 `POPTB_DEBUG_CMDS=1` makes the app read commands from `Documents/poptb_cmd.txt` twice a second and
 append results to `Documents/poptb_dbg.txt`: `find X Y T`, `filt X Y T`, `peek ADDR N`,
-`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `stat` (cursor moves / homings). The input script (`--script`) also takes
+`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `stat` (cursor moves / homings), `dump NAME` (0x400000-0x1000000 to
+`Documents/dump_NAME.bin`, for diffing game state between screens). The input script (`--script`) also takes
 `ttap:x,y` (touch tap in game coordinates).

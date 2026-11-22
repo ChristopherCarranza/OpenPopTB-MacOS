@@ -7,7 +7,7 @@
 //   one-finger drag      scroll the map, joystick style (arrow keys / Ctrl+arrows held)
 //   two-finger sideways  rotate the camera (Left/Right held)
 //   pinch / spread       zoom out / in (- / = held)
-//   button strip         Menu (Esc), Pause (P), Skip flyby (Space), Shaman (.), Save (F9)
+//   button strip         Menu (Esc), Pause (P), Skip flyby (Space), Shaman (.), Save (F9); in levels only
 //   iPad pointer         absolute, like the system cursor
 //
 // Cursor positioning. The game reads only relative mouse motion and keeps its own cursors (one per
@@ -40,6 +40,16 @@ static void cursor_rect(int *x0, int *y0, int *x1, int *y1) {
     int a = (int32_t)rd32(o + 0x38), b = (int32_t)rd32(o + 0x3c), c = (int32_t)rd32(o + 0x40), d = (int32_t)rd32(o + 0x44);
     if (a < 0 || b < 0 || c <= a || d <= b || c > 2048 || d > 2048) return;
     *x0 = a; *y0 = b; *x1 = c; *y1 = d;
+}
+// the game's mode: 1 in menus, world select and cutscenes, 3 while a level is loaded (also with its
+// in-game menu open); the word after it is 312 in a level. Unknown executables: always "in a level".
+static int in_level(void) {
+    extern const char *g_exe_name;
+    uint32_t a;
+    if (!strcasecmp(g_exe_name, "popTB.exe")) a = 0x599ab4u;
+    else if (!strcasecmp(g_exe_name, "D3DPopTB.exe")) a = 0x5d45a8u;
+    else return 1;
+    return rd32(a) == 3;
 }
 static int cursor_in_sync(void) {
     uint32_t o = mouse_obj();
@@ -113,6 +123,7 @@ static SDL_FRect btn_rect(int i) {   // window points, top-right inside the safe
     return r;
 }
 static int btn_at(float x, float y) {
+    if (!in_level()) return -1;   // buttons exist only in a level
     for (int i = 0; i < NBTN; i++) {
         SDL_FRect r = btn_rect(i);
         if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return i;
@@ -120,6 +131,7 @@ static int btn_at(float x, float y) {
     return -1;
 }
 static void touch_draw_overlay(void) {
+    if (!in_level()) return;
     int ww, wh, ow, oh;
     SDL_GetWindowSize(win, &ww, &wh);
     SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);

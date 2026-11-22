@@ -174,6 +174,13 @@ static void debug_cmds(void) {
                         fprintf(out, " %08x", ad);
                 fprintf(out, "\n");
             }
+        } else if (!strncmp(line, "dump ", 5)) {
+            // the game image and its static data (0x400000-0x1000000) -> Documents/dump_NAME.bin
+            char nm[64] = "", dp[1200]; sscanf(line + 5, "%63s", nm);
+            snprintf(dp, sizeof dp, "%s/Documents/dump_%s.bin", getenv("HOME") ? getenv("HOME") : ".", nm);
+            FILE *df = fopen(dp, "wb");
+            if (df) { fwrite(PTR(0x00400000u), 1, 0x00c00000u, df); fclose(df); }
+            fprintf(out, "dbg dump %s %s\n", nm, df ? "ok" : "failed");
         } else if (!strncmp(line, "stat", 4)) {
 #if TARGET_OS_IPHONE
             extern int g_home_count, g_touch_count;
