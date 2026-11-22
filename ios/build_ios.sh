@@ -5,14 +5,14 @@
 #   sim:    builds for the iOS Simulator (build-ios-sim/PopulousTB.app)
 #   device: builds for iPhone/iPad and signs with the given identity + profile (build-ios-dev/PopulousTB.app)
 #   xcode:  generates an Xcode project (build-xcode/PopulousTB.xcodeproj) to build, sign and run from Xcode;
-#           POPTB_TEAM=<team id> preselects the signing team (automatic signing)
+#           signing team: POPTB_TEAM (default 9A3R3VAZ8B, Union Worx; empty = choose in Xcode)
 # Needs: Xcode, SDL3 source in ../ios-deps/SDL, a venv with capstone pefile cmake ninja (.venv).
 set -e
 P="$(cd "$(dirname "$0")/.." && pwd)"
 KIND="${1:-sim}"
 GAME="${2:-$HOME/Library/Application Support/OpenPopTB/Game}"
 VARIANT="${POPTB_VARIANT:-tb}"
-if [ "$VARIANT" = d3d ]; then ID="${POPTB_BUNDLE_ID:-io.github.christophercarranza.openpoptb.d3d}"; SUF=-d3d; else ID="${POPTB_BUNDLE_ID:-io.github.christophercarranza.openpoptb}"; SUF=; fi
+if [ "$VARIANT" = d3d ]; then ID="${POPTB_BUNDLE_ID:-com.unionworx.openpoptb.d3d}"; SUF=-d3d; else ID="${POPTB_BUNDLE_ID:-com.unionworx.openpoptb}"; SUF=; fi
 export PATH="$P/.venv/bin:$PATH"
 if [ "$VARIANT" = d3d ] && [ ! -f "$P/gen_d3d/table.c" ]; then
   echo "== recompiling D3DPopTB.exe"
@@ -31,7 +31,8 @@ case "$KIND" in
   device) B="$P/build-ios-dev$SUF"; SYSROOT=iphoneos ;;
   xcode)
     B="$P/build-xcode$SUF"
-    TEAMARG=""; [ -n "$POPTB_TEAM" ] && TEAMARG="-DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=$POPTB_TEAM"
+    TEAM_ID="${POPTB_TEAM-9A3R3VAZ8B}"   # Union Worx; POPTB_TEAM= (empty) leaves the team to pick in Xcode
+    TEAMARG=""; [ -n "$TEAM_ID" ] && TEAMARG="-DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=$TEAM_ID"
     cmake -S "$P/ios" -B "$B" -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
       -DCMAKE_XCODE_GENERATE_SCHEME=ON -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE=Automatic $TEAMARG \
       -DPOPTB_BUNDLE_ID="$ID" -DPOPTB_VARIANT="$VARIANT" >/dev/null
