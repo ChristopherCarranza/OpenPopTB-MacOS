@@ -1,0 +1,12 @@
+--- a/src/gpu/metal/SDL_gpu_metal.m
++++ b/src/gpu/metal/SDL_gpu_metal.m
+@@ -4579,6 +4579,9 @@
+         if (@available(iOS 13.0, tvOS 13.0, *)) {
+             hasHardwareSupport = [device supportsFamily:MTLGPUFamilyApple3];
+         }
++#if TARGET_OS_SIMULATOR
++        hasHardwareSupport = true;   /* OpenPopTB local patch: the simulator's GPU reports no Apple family */
++#endif
+ #endif
+ 
+         if (!hasHardwareSupport) {

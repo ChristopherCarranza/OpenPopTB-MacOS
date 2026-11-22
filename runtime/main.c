@@ -8,7 +8,11 @@
 #include <sys/mman.h>
 #include <execinfo.h>
 #include <mach-o/dyld.h>
+#include <TargetConditionals.h>
 #include <SDL3/SDL.h>
+#if TARGET_OS_IPHONE
+#include <SDL3/SDL_main.h>   // iOS: SDL starts UIKit, then calls our main() on the main thread
+#endif
 
 static void on_fault(int sig, siginfo_t *si, void *uc) {
     (void)uc;
@@ -157,6 +161,20 @@ static void config_path(char *out, size_t n) {
 // order: --data/POPTB_DATA, saved path, folder next to the .app, current directory, ask the user
 // (folder or GOG installer)
 static int find_data_dir(const char *given) {
+#if TARGET_OS_IPHONE
+    // iOS: the game files live in the app's Documents/Game (writable, so saves work; visible in the
+    // Files app). The container path changes between installs, so it is computed on every launch.
+    (void)given;
+    const char *home = getenv("HOME");
+    char docs[1100]; snprintf(docs, sizeof docs, "%s/Documents/Game", home ? home : ".");
+    if (has_game(docs)) { snprintf(g_root, sizeof g_root, "%s", docs); return 1; }
+    mkdir(docs, 0755);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Populous: The Beginning",
+        "Game files not found.\n\nCopy the contents of your Populous: The Beginning folder (popTB.exe, "
+        "QMixer.dll, data, levels, sound...) into \"Populous TB/Game\" with the Files app or Finder, "
+        "then open the app again.", NULL);
+    return 0;
+#endif
     char cand[1100] = "";
     char cfg[1024]; config_path(cfg, sizeof cfg);
     char cf[1100]; snprintf(cf, sizeof cf, "%s/data_path.txt", cfg);
@@ -205,6 +223,9 @@ int main(int argc, char **argv) {
     if (!data) data = getenv("POPTB_DATA");
     // unpacks the GOG installer into Application Support and uses that copy from then on
     static char unpacked[1100];
+#if TARGET_OS_IPHONE
+    installer = NULL;   // no installer unpacking on iOS (no innoextract)
+#endif
     if (installer && !data) {
         if (!prep_from_installer(POPTB_EXE, installer, unpacked, sizeof unpacked)) return 1;
         data = unpacked;
