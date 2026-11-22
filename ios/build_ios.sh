@@ -1,9 +1,11 @@
 #!/bin/sh
 # Builds Populous TB for iOS/iPadOS from YOUR copy of the game.
-# usage: [POPTB_VARIANT=d3d] ios/build_ios.sh sim|device [game folder] [signing identity SHA1] [provisioning profile]
+# usage: [POPTB_VARIANT=d3d] ios/build_ios.sh sim|device|xcode [game folder] [signing identity SHA1] [provisioning profile]
 #   POPTB_VARIANT: tb (software renderer, default) or d3d (Direct3D build: 3D at the screen's resolution)
 #   sim:    builds for the iOS Simulator (build-ios-sim/PopulousTB.app)
 #   device: builds for iPhone/iPad and signs with the given identity + profile (build-ios-dev/PopulousTB.app)
+#   xcode:  generates an Xcode project (build-xcode/PopulousTB.xcodeproj) to build, sign and run from Xcode;
+#           POPTB_TEAM=<team id> preselects the signing team (automatic signing)
 # Needs: Xcode, SDL3 source in ../ios-deps/SDL, a venv with capstone pefile cmake ninja (.venv).
 set -e
 P="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,7 +29,15 @@ fi
 case "$KIND" in
   sim) B="$P/build-ios-sim$SUF"; SYSROOT=iphonesimulator ;;
   device) B="$P/build-ios-dev$SUF"; SYSROOT=iphoneos ;;
-  *) echo "usage: $0 sim|device" >&2; exit 1 ;;
+  xcode)
+    B="$P/build-xcode$SUF"
+    TEAMARG=""; [ -n "$POPTB_TEAM" ] && TEAMARG="-DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=$POPTB_TEAM"
+    cmake -S "$P/ios" -B "$B" -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+      -DCMAKE_XCODE_GENERATE_SCHEME=ON -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE=Automatic $TEAMARG \
+      -DPOPTB_BUNDLE_ID="$ID" -DPOPTB_VARIANT="$VARIANT" >/dev/null
+    echo "generated $B/openpoptb_ios.xcodeproj (scheme PopulousTB)"
+    exit 0 ;;
+  *) echo "usage: $0 sim|device|xcode" >&2; exit 1 ;;
 esac
 cmake -S "$P/ios" -B "$B" -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=$SYSROOT \
   -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release \

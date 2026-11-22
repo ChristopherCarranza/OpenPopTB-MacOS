@@ -18,6 +18,16 @@ ios/build_ios.sh sim                                   # build-ios-sim/PopulousT
 POPTB_VARIANT=d3d ios/build_ios.sh sim                 # build-ios-sim-d3d/
 ios/build_ios.sh device "" <identity SHA1> <profile>   # signed, build-ios-dev/
 ```
+### From Xcode
+```sh
+POPTB_TEAM=<team id> ios/build_ios.sh xcode                    # build-xcode/openpoptb_ios.xcodeproj
+POPTB_TEAM=<team id> POPTB_VARIANT=d3d ios/build_ios.sh xcode  # build-xcode-d3d/openpoptb_ios.xcodeproj
+```
+Open the project, pick the `PopulousTB` scheme and your iPhone/iPad as destination, then Run.
+Signing is automatic with the team given (or pick one under Signing & Capabilities). Generating the
+project takes a few minutes (thousands of generated functions); re-run the command after pulling
+changes, the folder is disposable.
+
 `POPTB_BUNDLE_ID` overrides the bundle id. The game folder defaults to
 `~/Library/Application Support/OpenPopTB/Game` (where the Mac app unpacks the GOG installer).
 
