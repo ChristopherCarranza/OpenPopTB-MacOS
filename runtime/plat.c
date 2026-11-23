@@ -186,8 +186,9 @@ static void debug_cmds(void) {
             fprintf(out, "dbg stall %d\n", on);
         } else if (!strncmp(line, "stat", 4)) {
 #if TARGET_OS_IPHONE
-            extern int g_home_count, g_touch_count;
-            fprintf(out, "dbg stat: cursor moves %d, homings %d, cursor (%d,%d)\n", g_touch_count, g_home_count, (int)vx, (int)vy);
+            extern int g_home_count, g_touch_count, g_zoom_in, g_zoom_out;
+            fprintf(out, "dbg stat: cursor moves %d, homings %d, cursor (%d,%d), zoom steps in %d out %d\n",
+                    g_touch_count, g_home_count, (int)vx, (int)vy, g_zoom_in, g_zoom_out);
 #endif
         } else if (!strncmp(line, "key ", 4)) {
             char nm[64] = ""; sscanf(line + 4, "%63s", nm);

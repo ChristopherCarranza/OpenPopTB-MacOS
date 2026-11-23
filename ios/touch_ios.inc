@@ -6,7 +6,7 @@
 //   two-finger tap       right click
 //   one-finger drag      scroll the map, joystick style (arrow keys / Ctrl+arrows held)
 //   two-finger sideways  rotate the camera (Left/Right held)
-//   pinch / spread       zoom out / in (- / = held)
+//   pinch / spread       zoom out / in, one step per PINCH_STEP of finger travel
 //   button strip         Menu (Esc), Pause (P), Skip flyby (Space), Shaman (.), Save (F9); in levels only
 //   iPad pointer         absolute, like the system cursor
 //
@@ -23,8 +23,8 @@
 #define TAP_SLOP 22.0f       // points a finger may wander and still be a tap
 #define LONG_MS 500          // long press -> right click
 #define JOY_DEAD 28.0f       // drag distance before scrolling/rotating starts (points)
-#define PINCH_IN 1.18f
-#define PINCH_OUT 0.85f
+#define PINCH_STEP 1.15f     // finger spread ratio per zoom step
+#define ZOOM_PULSE_MS 90     // how long one zoom step holds the zoom key
 
 // ---- the game's mouse object: cursor at +0x20, clamp rect at +0x38 (x0, y0, x1, y1) ----
 static uint32_t mouse_obj(void) {
@@ -92,7 +92,7 @@ static int frame_held(void) { return home_phase || (int32_t)(hide_until - now_ms
 static void click(int b) { if (up_pending[b]) mouse_button(b, 0); click_pending = b; }
 
 // ---- held keys (scrolling, rotation, zoom) ----
-enum { HK_UP = 1, HK_DOWN = 2, HK_LEFT = 4, HK_RIGHT = 8, HK_CTRL = 16, HK_ZIN = 32, HK_ZOUT = 64 };
+enum { HK_UP = 1, HK_DOWN = 2, HK_LEFT = 4, HK_RIGHT = 8, HK_CTRL = 16, HK_ZIN = 32, HK_ZOUT = 64 };   // zoom bits unused (zoom_step)
 static const SDL_Scancode hk_sc[7] = {SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
                                       SDL_SCANCODE_LCTRL, SDL_SCANCODE_EQUALS, SDL_SCANCODE_MINUS};
 static unsigned held;
@@ -167,6 +167,19 @@ enum { G_NONE, G_ONE, G_TWO, G_BUTTON, G_DONE };
 static int gesture, g_moved, g_long;
 static uint32_t g_t0;
 static float g_d0, g_cx0, g_cy0;
+static int g_two_mode;             // two fingers: 0 undecided, 1 pinch (zoom), 2 sideways (rotate)
+static int g_two_dirty;
+// zoom steps: a short press of = or - per step; steps in the same direction extend it
+static SDL_Scancode zoom_key; static uint32_t zoom_until;
+int g_zoom_in, g_zoom_out;   // diagnostics (debug "stat")
+static void zoom_step(int in) {
+    if (in) g_zoom_in++; else g_zoom_out++;
+    SDL_Scancode k = in ? SDL_SCANCODE_EQUALS : SDL_SCANCODE_MINUS;
+    uint32_t t = now_ms();
+    if (zoom_key && zoom_key != k) { send_key(zoom_key, 0); zoom_key = 0; }
+    if (!zoom_key) { send_key(k, 1); zoom_key = k; zoom_until = t; }
+    zoom_until = (zoom_until > t ? zoom_until : t) + ZOOM_PULSE_MS;
+}
 
 static Finger *finger_of(SDL_FingerID id) {
     for (int i = 0; i < nfing; i++) if (fing[i].id == id) return &fing[i];
@@ -177,10 +190,41 @@ static void finger_drop(SDL_FingerID id) {
 }
 static float dist2(void) { float dx = fing[1].x - fing[0].x, dy = fing[1].y - fing[0].y; return SDL_sqrtf(dx * dx + dy * dy); }
 
+// iOS delivers each finger's motion as its own event, so between the two the spread briefly looks
+// wrong; the two-finger gesture is judged once per frame on the settled positions.
+static void two_finger_tick(void) {
+    if (!g_two_dirty || gesture != G_TWO || nfing != 2) return;
+    g_two_dirty = 0;
+    float d = dist2(), cdx = (fing[0].x + fing[1].x) / 2 - g_cx0;
+    float spread = SDL_fabsf(d - g_d0);
+    if (!g_two_mode) {
+        if (spread > g_d0 * (PINCH_STEP - 1) && spread > SDL_fabsf(cdx)) g_two_mode = 1;
+        else if (SDL_fabsf(cdx) > JOY_DEAD && SDL_fabsf(cdx) > spread) g_two_mode = 2;
+    }
+    if (g_two_mode == 1) {
+        // one zoom step per PINCH_STEP of spread; the base moves by whole steps so nothing is lost
+        g_moved = 1;
+        while (d > g_d0 * PINCH_STEP) { zoom_step(1); g_d0 *= PINCH_STEP; }
+        while (d < g_d0 / PINCH_STEP) { zoom_step(0); g_d0 /= PINCH_STEP; }
+    } else if (g_two_mode == 2) {
+        g_moved = 1;
+        set_held(cdx < -JOY_DEAD ? HK_LEFT : cdx > JOY_DEAD ? HK_RIGHT : 0);
+    }
+}
+
 static void on_finger(const SDL_Event *e) {
     int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
     float x = e->tfinger.x * ww, y = e->tfinger.y * wh;   // window points
     if (e->type == SDL_EVENT_FINGER_DOWN) {
+        // a lost finger-up would leave a ghost finger and swallow later taps: if this is the only finger
+        // the system knows about, start from a clean state
+        int nsys = 0; SDL_Finger **fl = SDL_GetTouchFingers(e->tfinger.touchID, &nsys);
+        SDL_free(fl);
+        if (nsys <= 1 && nfing) {
+            set_held(0);
+            nfing = 0;
+            if (gesture != G_BUTTON) gesture = G_NONE;
+        }
         if (nfing == 0) {
             int b = btn_at(x, y);
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
@@ -190,7 +234,7 @@ static void on_finger(const SDL_Event *e) {
         } else if (nfing == 1 && gesture == G_ONE) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
             set_held(0);
-            gesture = G_TWO; g_moved = 0; g_t0 = now_ms();
+            gesture = G_TWO; g_moved = 0; g_two_mode = 0; g_two_dirty = 0; g_t0 = now_ms();
             g_d0 = dist2(); if (g_d0 < 1) g_d0 = 1;
             g_cx0 = (fing[0].x + fing[1].x) / 2; g_cy0 = (fing[0].y + fing[1].y) / 2;
         } else if (nfing < 2) fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
@@ -210,14 +254,7 @@ static void on_finger(const SDL_Event *e) {
                 set_held(want);
             }
         } else if (gesture == G_TWO && nfing == 2) {
-            float ratio = dist2() / g_d0, cdx = (fing[0].x + fing[1].x) / 2 - g_cx0;
-            unsigned want = 0;
-            if (ratio > PINCH_IN) want = HK_ZIN;
-            else if (ratio < PINCH_OUT) want = HK_ZOUT;
-            else if (cdx < -JOY_DEAD) want = HK_LEFT;
-            else if (cdx > JOY_DEAD) want = HK_RIGHT;
-            if (want) g_moved = 1;
-            set_held(want);
+            g_two_dirty = 1;   // judged once per frame in two_finger_tick, after both fingers updated
         }
         return;
     }
@@ -309,6 +346,8 @@ static void touch_tick(void) {
         }
     }
     if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; click(1); }
+    two_finger_tick();
+    if (zoom_key && (int32_t)(t - zoom_until) >= 0) { send_key(zoom_key, 0); zoom_key = 0; }
     if (btn_down >= 0 && gesture != G_BUTTON && t - btn_down_ms >= 80) { send_key(btns[btn_down].sc, 0); btn_down = -1; }
 }
 

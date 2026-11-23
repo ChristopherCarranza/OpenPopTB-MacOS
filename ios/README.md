@@ -51,7 +51,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Two-finger tap | right click |
 | One-finger drag | scroll the map, joystick style (arrows / Ctrl+arrows held while dragged) |
 | Two-finger sideways drag | rotate the camera |
-| Pinch / spread | zoom out / in |
+| Pinch / spread | zoom out / in, one step per 15% change in finger spread (stops when the fingers stop) |
 | Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9) |
 
 An iPad trackpad or mouse moves the cursor directly.
