@@ -198,7 +198,7 @@ static void debug_cmds(void) {
             fprintf(out, "dbg stat: cursor moves %d, homings %d, cursor (%d,%d), zoom steps in %d out %d, edge moves %d, keys shift %d ctrl %d alt %d, mice %d relative %d\n",
                     g_touch_count, g_home_count, (int)vx, (int)vy, g_zoom_in, g_zoom_out, g_edge_moves,
                     di_keys[0x2A] != 0, di_keys[0x1D] != 0, di_keys[0x38] != 0, g_mice, (int)SDL_GetWindowRelativeMouseMode(win));
-            extern int g_last_click_mods; fprintf(out, "dbg last click mods %d\n", g_last_click_mods);
+            extern int g_last_click_mods, g_drag_scroll_ms; fprintf(out, "dbg last click mods %d, drag edge scroll %d ms\n", g_last_click_mods, g_drag_scroll_ms);
         } else if (!strncmp(line, "zoomu ", 6)) {
             void touch_debug_zoom(FILE *, float); touch_debug_zoom(out, (float)atof(line + 6));
         } else if (!strncmp(line, "edge ", 5)) {

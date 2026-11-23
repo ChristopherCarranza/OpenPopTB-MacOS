@@ -290,6 +290,7 @@ static float drag_tx, drag_ty;
 int g_edge_px = 4;        // game pixels from the cursor rect's edge that count as "at the edge" (debug: edge N)
 // The game scrolls the map while its cursor sits on the screen's last pixel, also while a selection box is
 // dragged, and a finger at the bezel lands there easily: the map would race off. Box drags stay this far in.
+static float drag_rx, drag_ry;   // finger position (game pixels) without the inset
 static void drag_inset(float *x, float *y) {
     int x0, y0, x1, y1; cursor_rect(&x0, &y0, &x1, &y1);
     float m = (float)g_edge_px;
@@ -508,6 +509,29 @@ void touch_debug_zoom(FILE *out, float u) {
             g_hook_n[0], g_hook_n[1], g_hook_n[2], g_hook_n[3], g_zoom_applied);
 }
 
+// Slow edge scroll while a selection box is dragged (3D build): the cursor stays off the edge pixels (the
+// game's own edge scroll is far too fast for a finger), so the camera is moved here instead, faster the
+// closer the finger is to the edge: 0 at DRAG_EDGE_BAND game pixels in, DRAG_EDGE_SPEED at the bezel.
+#define DRAG_EDGE_BAND 30.0f    // game pixels
+#define DRAG_EDGE_SPEED 100.0f  // game pixels of view per second at the bezel (cam_move units)
+int g_drag_scroll_ms;           // diagnostics
+static void drag_edge_tick(uint32_t t) {
+    static uint32_t last;
+    if (last && (int32_t)(t - last) <= 0) return;   // input is pumped from more than one thread
+    float dt = last ? (float)(t - last) / 1000.0f : 0; last = t;
+    if (dt > 0.05f) dt = 0.05f;
+    if (!g_drag || !di_mouse_btn[0] || !cam_direct() || !in_level() || dt <= 0) return;
+    int x0, y0, x1, y1; cursor_rect(&x0, &y0, &x1, &y1);
+    float b = DRAG_EDGE_BAND, ex = 0, ey = 0;
+    if (drag_rx < x0 + b) ex = -(x0 + b - drag_rx) / b; else if (drag_rx > x1 - 1 - b) ex = (drag_rx - (x1 - 1 - b)) / b;
+    if (drag_ry < y0 + b) ey = -(y0 + b - drag_ry) / b; else if (drag_ry > y1 - 1 - b) ey = (drag_ry - (y1 - 1 - b)) / b;
+    if (ex > 1) ex = 1; if (ex < -1) ex = -1; if (ey > 1) ey = 1; if (ey < -1) ey = -1;
+    if (!ex && !ey) return;
+    // look towards the edge: the world moves the other way, like fingers dragging it back
+    cam_move(-ex * DRAG_EDGE_SPEED * dt, -ey * DRAG_EDGE_SPEED * dt);
+    g_drag_scroll_ms += (int)(dt * 1000);
+}
+
 // keys for grab panning/turning, from the pulse timers (called every tick)
 static void pan_keys_tick(void) {
     if (gesture != G_TWO || (g_two_mode != 2 && g_two_mode != 3)) {
@@ -578,7 +602,11 @@ static void on_finger(const SDL_Event *e) {
                 if (up_pending[0]) mouse_button(0, 0);
                 press_pending = 0; release_after = 0;
             }
-            if (g_drag) { win_to_game(f->x, f->y, &drag_tx, &drag_ty); drag_inset(&drag_tx, &drag_ty); drag_dirty = 1; }
+            if (g_drag) {
+                win_to_game(f->x, f->y, &drag_tx, &drag_ty);
+                drag_rx = drag_tx; drag_ry = drag_ty;   // unclamped, for the slow edge scroll
+                drag_inset(&drag_tx, &drag_ty); drag_dirty = 1;
+            }
         } else if (gesture == G_TWO && nfing == 2) {
             g_two_dirty = 1;   // judged once per frame in two_finger_tick, after both fingers updated
         }
@@ -729,6 +757,7 @@ static void touch_tick(void) {
     if (g_drag && drag_dirty && di_mouse_btn[0] && !home_phase && t - down_ms[0] >= SETTLE_MS) {
         cursor_to(drag_tx, drag_ty); drag_dirty = 0;
     }
+    drag_edge_tick(t);
     if (drag_release_ms && (int32_t)(t - drag_release_ms) >= 0) {
         drag_release_ms = 0;
         if (di_mouse_btn[0]) mouse_button(0, 0);
