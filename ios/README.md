@@ -52,7 +52,15 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | One-finger drag | scroll the map, joystick style (arrows / Ctrl+arrows held while dragged) |
 | Two-finger sideways drag | rotate the camera |
 | Pinch / spread | zoom out / in, one step per 15% change in finger spread (stops when the fingers stop) |
-| Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9) |
+| Buttons row 1 (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9), WORLD (Return) |
+| Buttons row 2 | SHIFT / CTRL / ALT, then command groups 1-6 |
+
+SHIFT / CTRL / ALT apply to the next tap, long press or button and then switch off (lit yellow);
+tap twice quickly to lock one on (orange), tap again to unlock. With groups: SHIFT+n assigns the
+selected followers, n selects, CTRL+n adds to the selection, ALT+n zooms to the group.
+
+Edge scrolling: the game scrolls while its cursor sits at the screen edge. After a finger lifts,
+a cursor within 4 game pixels of the edge (debug `edge N`) is moved inward so the map stops.
 
 An iPad trackpad or mouse moves the cursor directly.
 
@@ -75,7 +83,7 @@ of silence from the device, so nothing waits forever; the device takes over agai
 ## Debugging
 `POPTB_DEBUG_CMDS=1` makes the app read commands from `Documents/poptb_cmd.txt` twice a second and
 append results to `Documents/poptb_dbg.txt`: `find X Y T`, `filt X Y T`, `peek ADDR N`,
-`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `stat` (cursor moves / homings), `dump NAME` (0x400000-0x1000000 to
+`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `edge N`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `dump NAME` (0x400000-0x1000000 to
 `Documents/dump_NAME.bin`, for diffing game state between screens), `stall 1|0` (ignore the audio
 device, to test the stall watchdog). The input script (`--script`) also takes
 `ttap:x,y` (touch tap in game coordinates).

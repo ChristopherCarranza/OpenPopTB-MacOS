@@ -186,9 +186,13 @@ static void debug_cmds(void) {
             fprintf(out, "dbg stall %d\n", on);
         } else if (!strncmp(line, "stat", 4)) {
 #if TARGET_OS_IPHONE
-            extern int g_home_count, g_touch_count, g_zoom_in, g_zoom_out;
-            fprintf(out, "dbg stat: cursor moves %d, homings %d, cursor (%d,%d), zoom steps in %d out %d\n",
-                    g_touch_count, g_home_count, (int)vx, (int)vy, g_zoom_in, g_zoom_out);
+            extern int g_home_count, g_touch_count, g_zoom_in, g_zoom_out, g_edge_moves;
+            fprintf(out, "dbg stat: cursor moves %d, homings %d, cursor (%d,%d), zoom steps in %d out %d, edge moves %d, keys shift %d ctrl %d alt %d\n",
+                    g_touch_count, g_home_count, (int)vx, (int)vy, g_zoom_in, g_zoom_out, g_edge_moves,
+                    di_keys[0x2A] != 0, di_keys[0x1D] != 0, di_keys[0x38] != 0);
+        } else if (!strncmp(line, "edge ", 5)) {
+            extern int g_edge_px; g_edge_px = atoi(line + 5);
+            fprintf(out, "dbg edge %d\n", g_edge_px);
 #endif
         } else if (!strncmp(line, "key ", 4)) {
             char nm[64] = ""; sscanf(line + 4, "%63s", nm);
@@ -440,8 +444,9 @@ static uint32_t mk_state(void) {
     uint32_t s = 0;
     if (di_mouse_btn[0]) s |= 1; if (di_mouse_btn[1]) s |= 2; if (di_mouse_btn[2]) s |= 0x10;
     const bool *k = SDL_GetKeyboardState(NULL);
-    if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) s |= 4;
-    if (k[SDL_SCANCODE_LCTRL] || k[SDL_SCANCODE_RCTRL]) s |= 8;
+    // di_keys also holds modifiers injected by touch controls (DIK 0x2A/0x36 shift, 0x1D/0x9D ctrl)
+    if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT] || di_keys[0x2A] || di_keys[0x36]) s |= 4;
+    if (k[SDL_SCANCODE_LCTRL] || k[SDL_SCANCODE_RCTRL] || di_keys[0x1D] || di_keys[0x9D]) s |= 8;
     return s;
 }
 
