@@ -66,9 +66,16 @@ drawn while homing are not shown, so the cursor never visibly jumps to the corne
 The buttons show only while a level is loaded: the game's mode word (`popTB.exe` 0x599ab4,
 `D3DPopTB.exe` 0x5d45a8) is 1 in menus, world select and cutscenes, 3 in a level.
 
+## Audio stalls
+Videos (and the intro) pace themselves on DirectSound play positions, which only move when the audio
+device asks for sound. If the device stops (phone call, Bluetooth/route change, audio server
+restart), `runtime/dsound.c` advances the mixer from a watchdog thread in real time after 250 ms
+of silence from the device, so nothing waits forever; the device takes over again when it returns.
+
 ## Debugging
 `POPTB_DEBUG_CMDS=1` makes the app read commands from `Documents/poptb_cmd.txt` twice a second and
 append results to `Documents/poptb_dbg.txt`: `find X Y T`, `filt X Y T`, `peek ADDR N`,
 `poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `stat` (cursor moves / homings), `dump NAME` (0x400000-0x1000000 to
-`Documents/dump_NAME.bin`, for diffing game state between screens). The input script (`--script`) also takes
+`Documents/dump_NAME.bin`, for diffing game state between screens), `stall 1|0` (ignore the audio
+device, to test the stall watchdog). The input script (`--script`) also takes
 `ttap:x,y` (touch tap in game coordinates).

@@ -181,6 +181,9 @@ static void debug_cmds(void) {
             FILE *df = fopen(dp, "wb");
             if (df) { fwrite(PTR(0x00400000u), 1, 0x00c00000u, df); fclose(df); }
             fprintf(out, "dbg dump %s %s\n", nm, df ? "ok" : "failed");
+        } else if (!strncmp(line, "stall ", 6)) {
+            void dsound_debug_stall(int); int on = atoi(line + 6); dsound_debug_stall(on);
+            fprintf(out, "dbg stall %d\n", on);
         } else if (!strncmp(line, "stat", 4)) {
 #if TARGET_OS_IPHONE
             extern int g_home_count, g_touch_count;

@@ -146,14 +146,8 @@ static void *wave_notify_main(void *arg) {
     return NULL;
 }
 
-static void SDLCALL audio_cb(void *ud, SDL_AudioStream *s, int additional, int total) {
-    (void)ud; (void)total;
-    int frames = additional / 8;
-    if (frames <= 0) return;
-    static float *mix; static int cap;
-    if (frames > cap) { free(mix); mix = malloc((size_t)frames * 8); cap = frames; }
-    memset(mix, 0, (size_t)frames * 8);
-    pthread_mutex_lock(&mix_mu);
+// Advances every playing buffer by `frames` output frames, mixing into mix (caller holds mix_mu).
+static void mix_frames(float *mix, int frames) {
     for (int i = 0; i < MAXBUF; i++) {
         Buf *b = bufs[i];
         if (!b || !b->playing || !b->size || !b->align) continue;
@@ -184,6 +178,50 @@ static void SDLCALL audio_cb(void *ud, SDL_AudioStream *s, int additional, int t
         b->pos = p;
     }
     wave_mix(mix, frames);
+}
+
+// The game paces videos (and some timing) on play positions, which move only when the device asks for
+// audio. If the device stops calling (route change, phone call, audio server restart), a watchdog
+// advances the mixer in real time and discards the output, so nothing waits forever on a frozen cursor.
+#define STALL_MS 250
+static uint32_t last_adv_ms;      // last time the mixer advanced (device or watchdog), under mix_mu
+static uint32_t last_dev_ms;      // last time the device asked for audio
+static volatile int dbg_stall;    // debug: ignore the device (simulates a stalled audio device)
+static void *audio_watchdog(void *arg) {
+    (void)arg;
+    float *mix = NULL; int cap = 0;
+    for (;;) {
+        usleep(20000);
+        pthread_mutex_lock(&mix_mu);
+        uint32_t t = now_ms();
+        if (t - last_dev_ms >= STALL_MS) {
+            uint32_t gap = t - last_adv_ms;   // real time since the mixer last moved
+            if (gap > 1000) gap = 1000;       // after a long suspension don't fast-forward minutes of audio
+            int frames = (int)((uint64_t)gap * OUT_RATE / 1000);
+            if (frames > cap) { free(mix); mix = malloc((size_t)frames * 8); cap = frames; }
+            memset(mix, 0, (size_t)frames * 8);
+            mix_frames(mix, frames);
+            last_adv_ms = t;
+            static uint32_t warned;
+            if (t - warned > 5000) { warned = t; WARN("audio device stalled: advancing playback without it"); }
+        }
+        pthread_mutex_unlock(&mix_mu);
+    }
+    return NULL;
+}
+void dsound_debug_stall(int on) { dbg_stall = on; }
+
+static void SDLCALL audio_cb(void *ud, SDL_AudioStream *s, int additional, int total) {
+    (void)ud; (void)total;
+    int frames = additional / 8;
+    if (frames <= 0) return;
+    static float *mix; static int cap;
+    if (frames > cap) { free(mix); mix = malloc((size_t)frames * 8); cap = frames; }
+    memset(mix, 0, (size_t)frames * 8);
+    if (dbg_stall) { SDL_PutAudioStreamData(s, mix, frames * 8); return; }
+    pthread_mutex_lock(&mix_mu);
+    mix_frames(mix, frames);
+    last_adv_ms = last_dev_ms = now_ms();
     pthread_mutex_unlock(&mix_mu);
     for (int k = 0; k < frames * 2; k++) { float v = mix[k]; mix[k] = v > 1 ? 1 : v < -1 ? -1 : v; }
     SDL_PutAudioStreamData(s, mix, frames * 8);
@@ -199,6 +237,8 @@ int audio_init(void) {
     stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_cb, NULL);
     if (!stream) { WARN("audio unavailable: %s", SDL_GetError()); audio_ok = 0; return 0; }
     SDL_ResumeAudioStreamDevice(stream);
+    pthread_mutex_lock(&mix_mu); last_adv_ms = last_dev_ms = now_ms(); pthread_mutex_unlock(&mix_mu);
+    pthread_t wd; pthread_create(&wd, NULL, audio_watchdog, NULL); pthread_detach(wd);
     audio_ok = 1;
     return 1;
 }
