@@ -287,6 +287,15 @@ static float g_px, g_py, g_pa;       // last judged centroid / angle
 // one-finger drag = left button held (selection box); the cursor follows the finger once pressed
 static int g_drag, drag_dirty;
 static float drag_tx, drag_ty;
+int g_edge_px = 4;        // game pixels from the cursor rect's edge that count as "at the edge" (debug: edge N)
+// The game scrolls the map while its cursor sits on the screen's last pixel, also while a selection box is
+// dragged, and a finger at the bezel lands there easily: the map would race off. Box drags stay this far in.
+static void drag_inset(float *x, float *y) {
+    int x0, y0, x1, y1; cursor_rect(&x0, &y0, &x1, &y1);
+    float m = (float)g_edge_px;
+    if (*x < x0 + m) *x = x0 + m; if (*x > x1 - 1 - m) *x = x1 - 1 - m;
+    if (*y < y0 + m) *y = y0 + m; if (*y > y1 - 1 - m) *y = y1 - 1 - m;
+}
 static uint32_t drag_release_ms;
 static int g_two_mode;             // two fingers: 0 undecided, 1 pinch (zoom), 2 sideways (rotate)
 static int g_two_dirty;
@@ -569,7 +578,7 @@ static void on_finger(const SDL_Event *e) {
                 if (up_pending[0]) mouse_button(0, 0);
                 press_pending = 0; release_after = 0;
             }
-            if (g_drag) { win_to_game(f->x, f->y, &drag_tx, &drag_ty); drag_dirty = 1; }
+            if (g_drag) { win_to_game(f->x, f->y, &drag_tx, &drag_ty); drag_inset(&drag_tx, &drag_ty); drag_dirty = 1; }
         } else if (gesture == G_TWO && nfing == 2) {
             g_two_dirty = 1;   // judged once per frame in two_finger_tick, after both fingers updated
         }
@@ -606,7 +615,6 @@ static void on_finger(const SDL_Event *e) {
 }
 
 // ---- edge scrolling ----
-int g_edge_px = 4;        // game pixels from the cursor rect's edge that count as "at the edge" (debug: edge N)
 int g_edge_moves;         // diagnostics
 static void edge_tick(uint32_t t) {
     if (!g_edge_px || !touch_owned || nfing || home_phase || click_pending >= 0 || press_pending >= 0) return;

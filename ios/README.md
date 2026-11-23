@@ -71,6 +71,8 @@ buttons hide while the mouse or keyboard is in use and come back on the next tou
 
 Edge scrolling: the game scrolls while its cursor sits at the screen edge. After a finger lifts,
 a cursor within 4 game pixels of the edge (debug `edge N`) is moved inward so the map stops.
+While a finger drags a selection box the cursor stays those 4 pixels inside the edge, so the box can't
+set off the game's own edge scrolling (which raced the map away with a finger at the bezel).
 
 An iPad trackpad or mouse moves the cursor directly.
 
