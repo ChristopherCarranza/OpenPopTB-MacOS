@@ -9,7 +9,7 @@
 //   pinch / spread       zoom out / in, one step per PINCH_STEP of finger travel
 //   buttons (levels only) row 1: Menu (Esc), Pause (P), Skip (Space), Shaman (.), Save (F9), World (Return)
 //                         row 2: command groups 1-6
-//                         thumb column, bottom right: SHIFT / CTRL / ALT. Hold while tapping with the other
+//                         thumb column, bottom left (left hand): SHIFT / CTRL / ALT. Hold while tapping with the other
 //                         hand, or tap to apply to the next tap/button (double-tap locks)
 //   edge scrolling       the game scrolls while its cursor sits at a screen edge; after a touch ends near
 //                         an edge the cursor is moved inward so the map doesn't keep drifting
@@ -22,6 +22,7 @@
 // distance from that corner to the finger. Frames drawn while homing are not presented, so the cursor
 // never visibly jumps to the corner. In sync (the usual case inside a level), the move is direct.
 
+#define THUMB_STRIP 100      // points reserved left of the game picture for the thumb column (levels)
 #define HOME_MS 40           // homing motion -> target motion (separate DirectInput batches)
 #define SETTLE_MS 40         // target motion -> button press
 #define HIDE_AFTER_MS 30     // keep holding the frame this long after the target motion
@@ -69,7 +70,7 @@ static void post_move(void) {
     msgq_post(g_hwnd, 0x200, mk_state(), (uint32_t)(g_mouse_x & 0xffff) | ((uint32_t)g_mouse_y << 16));
 }
 static void win_to_game(float wx, float wy, float *x, float *y) {
-    SDL_RenderCoordinatesFromWindow(ren, wx, wy, x, y);
+    map_from_window(wx, wy, x, y);
 }
 
 int g_home_count, g_touch_count;   // diagnostics (debug "stat")
@@ -87,6 +88,8 @@ static int touch_owned;             // the cursor was last placed by a finger (n
 static int kbm_relative;            // relative mouse mode is on (a mouse is connected)
 static int kbm_active;              // the last input came from the mouse or keyboard
 int g_mice;                         // diagnostics
+// left strip kept free of the game picture: in a level, in touch mode (mouse/keyboard: full size)
+static float touch_left_reserve(void) { return in_level() && !kbm_active ? THUMB_STRIP : 0; }
 int g_last_click_mods = -1;         // diagnostics: modifier mask of the last touch click
 static uint32_t last_touch_ms;       // last finger activity
 static void cursor_to(float gx, float gy) {
@@ -174,12 +177,9 @@ static SDL_FRect btn_rect(int i) {   // window points, right-aligned rows inside
     SDL_GetWindowSize(win, &ww, &wh);
     if (!SDL_GetWindowSafeArea(win, &safe)) safe = (SDL_Rect){0, 0, ww, wh};
     if (btns[i].row == 2) {
-        // thumb column, SHIFT nearest the corner. Centred in the black margin beside the game when
-        // the screen is wider than 4:3 (iPhone), else over the bottom-right of the game view (iPad)
-        float sc = SDL_min((float)ww / tex_w, (float)wh / tex_h);
-        float frame_r = (ww + tex_w * sc) / 2, safe_r = (float)(safe.x + safe.w);
-        float w = btns[i].w, x = safe_r - 10 - w;
-        if (safe_r - frame_r >= w + 16) x = frame_r + (safe_r - frame_r - w) / 2;
+        // thumb column for the LEFT hand (the right hand taps the game), SHIFT nearest the corner, in
+        // the strip the game picture leaves free on the left in a level (touch_left_reserve)
+        float w = btns[i].w, x = safe.x + (THUMB_STRIP - w) / 2;
         int slot = i - 6;   // 0 SHIFT (bottom), 1 CTRL, 2 ALT (top)
         SDL_FRect r = {x, safe.y + safe.h - 24 - THUMB_H - slot * (THUMB_H + THUMB_GAP), w, THUMB_H};
         return r;

@@ -53,12 +53,16 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Two-finger sideways drag | rotate the camera |
 | Pinch / spread | zoom out / in, one step per 15% change in finger spread (stops when the fingers stop) |
 | Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9), WORLD (Return); command groups 1-6 below |
-| Thumb buttons, bottom right | SHIFT / CTRL / ALT (in the black margin beside the game on wide screens) |
+| Thumb buttons, bottom left | SHIFT / CTRL / ALT, in a strip the game picture leaves free in levels |
 
-SHIFT / CTRL / ALT: hold one with your right thumb while tapping the game with the other hand, or
+SHIFT / CTRL / ALT: hold one with your left thumb while tapping the game with your right hand, or
 tap it to apply to the next tap, long press or button (lit yellow, then off); tap twice quickly to
 lock it on (orange), tap again to unlock. Fingers on buttons don't count towards gestures. With
 groups: SHIFT+n assigns the selected followers, n selects, CTRL+n adds to the selection, ALT+n zooms.
+
+On iOS the game picture is placed by the app (not SDL's letterbox): inside the horizontal safe area
+(clear of camera cutouts), and in a level, in touch mode, shrunk to leave a 100-point strip on the
+left for the thumb buttons. Menus, cutscenes and mouse/keyboard play use the full size.
 
 Hardware mouse and keyboard (iPad, or any device with a mouse connected): the pointer is captured
 and the game gets raw mouse movement, buttons, wheel and keys exactly like the Mac app. The on-screen

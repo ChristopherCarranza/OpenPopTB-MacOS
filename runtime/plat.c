@@ -231,8 +231,51 @@ static void debug_cmds(void) {
     remove(p);
     if (out != stderr) fclose(out);
 }
+// ---- where the game picture goes ----
+// Mac: SDL's letterboxed logical presentation. iOS: placed here, so the picture can leave a strip on
+// the left for the thumb buttons (touch_left_reserve, in levels) and stay clear of camera cutouts at
+// the sides (horizontal safe area). Everything that converts between window points and game pixels
+// goes through map_from_window / map_to_window.
+#if TARGET_OS_IPHONE
+static float touch_left_reserve(void);
+static SDL_FRect game_dst = {0, 0, 1, 1};   // output pixels
+static float px_per_pt = 1;
+static void layout_game(void) {
+    int ww, wh, pw, ph;
+    SDL_GetWindowSize(win, &ww, &wh); SDL_GetWindowSizeInPixels(win, &pw, &ph);
+    if (ww <= 0 || wh <= 0) return;
+    px_per_pt = (float)pw / ww;
+    SDL_Rect safe;
+    if (!SDL_GetWindowSafeArea(win, &safe)) safe = (SDL_Rect){0, 0, ww, wh};
+    float l = safe.x + touch_left_reserve(), r = (float)(safe.x + safe.w);   // full height: the home
+    float s = SDL_min((r - l) / tex_w, (float)wh / tex_h);                   // indicator is just a line
+    float w = tex_w * s, h = tex_h * s;
+    game_dst = (SDL_FRect){(l + (r - l - w) / 2) * px_per_pt, (wh - h) / 2 * px_per_pt, w * px_per_pt, h * px_per_pt};
+}
+static void map_from_window(float wx, float wy, float *x, float *y) {
+    *x = (wx * px_per_pt - game_dst.x) * tex_w / game_dst.w;
+    *y = (wy * px_per_pt - game_dst.y) * tex_h / game_dst.h;
+}
+static void map_to_window(float x, float y, float *wx, float *wy) {
+    *wx = (game_dst.x + x * game_dst.w / tex_w) / px_per_pt;
+    *wy = (game_dst.y + y * game_dst.h / tex_h) / px_per_pt;
+}
+#define GAME_DST (&game_dst)
+#else
+static void layout_game(void) {}
+static void map_from_window(float wx, float wy, float *x, float *y) { SDL_RenderCoordinatesFromWindow(ren, wx, wy, x, y); }
+static void map_to_window(float x, float y, float *wx, float *wy) { SDL_RenderCoordinatesToWindow(ren, x, y, wx, wy); }
+#define GAME_DST NULL
+#endif
+static void set_logical(int w, int h) {
+#if TARGET_OS_IPHONE
+    (void)w; (void)h; SDL_SetRenderLogicalPresentation(ren, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+#else
+    SDL_SetRenderLogicalPresentation(ren, w, h, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+#endif
+}
 static void game_to_window(int gx, int gy, float *wx, float *wy) {
-    SDL_RenderCoordinatesToWindow(ren, (float)gx + 0.5f, (float)gy + 0.5f, wx, wy);
+    map_to_window((float)gx + 0.5f, (float)gy + 0.5f, wx, wy);
 }
 static void script_tick(void) {
     uint32_t t = now_ms() - g_start_ms;
@@ -285,7 +328,8 @@ void plat_init(void) {
     if (!ren) { WARN("GPU renderer unavailable: %s", SDL_GetError()); ren = SDL_CreateRenderer(win, NULL); }
     LOG("renderer: %s", SDL_GetRendererName(ren));
     SDL_SetRenderVSync(ren, 0);
-    SDL_SetRenderLogicalPresentation(ren, tex_w, tex_h, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    set_logical(tex_w, tex_h);
+    layout_game();
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
     SDL_RenderPresent(ren);
@@ -306,7 +350,7 @@ static void set_size(int w, int h) {
     if (tex) SDL_DestroyTexture(tex);
     if (overlay) SDL_DestroyTexture(overlay);
     tex = overlay = NULL;
-    SDL_SetRenderLogicalPresentation(ren, w, h, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    set_logical(w, h);
     free(rgba); rgba = malloc((size_t)w * h * 4);
     tex_w = w; tex_h = h;
 }
@@ -366,7 +410,8 @@ void plat_present(const uint8_t *pix, int w, int h, int pitch, const uint32_t *p
     SDL_Texture *t = stream_tex(&tex, SDL_PIXELFORMAT_XRGB8888, SDL_BLENDMODE_NONE);
     SDL_UpdateTexture(t, NULL, rgba, w * 4);
     SDL_RenderClear(ren);
-    SDL_RenderTexture(ren, t, NULL, NULL);
+    layout_game();
+    SDL_RenderTexture(ren, t, NULL, GAME_DST);
     finish_frame(w, h);
 }
 
@@ -402,8 +447,9 @@ void plat_present_hybrid(const uint16_t *pix, int w, int h, int pitch, const uin
     SDL_Texture *t = stream_tex(&overlay, SDL_PIXELFORMAT_ARGB8888, SDL_BLENDMODE_BLEND);
     SDL_UpdateTexture(t, NULL, rgba, w * 4);
     SDL_RenderClear(ren);
-    if (hires) SDL_RenderTexture(ren, hires, NULL, NULL);
-    SDL_RenderTexture(ren, t, NULL, NULL);
+    layout_game();
+    if (hires) SDL_RenderTexture(ren, hires, NULL, GAME_DST);
+    SDL_RenderTexture(ren, t, NULL, GAME_DST);
     finish_frame(w, h);
 }
 
@@ -449,7 +495,7 @@ static const KeyMap *key_of(SDL_Scancode sc) {
 
 static void mouse_to_game(float wx, float wy) {
     float x, y;
-    SDL_RenderCoordinatesFromWindow(ren, wx, wy, &x, &y);
+    map_from_window(wx, wy, &x, &y);
     int ix = (int)x, iy = (int)y;
     if (ix < 0) ix = 0; if (iy < 0) iy = 0;
     if (ix >= tex_w) ix = tex_w - 1; if (iy >= tex_h) iy = tex_h - 1;
@@ -536,8 +582,8 @@ void plat_pump(void) {
         case SDL_EVENT_MOUSE_MOTION: {
             // deltas in window points -> game pixels
             float x0, y0, x1, y1;
-            SDL_RenderCoordinatesFromWindow(ren, 0, 0, &x0, &y0);
-            SDL_RenderCoordinatesFromWindow(ren, e.motion.xrel, e.motion.yrel, &x1, &y1);
+            map_from_window(0, 0, &x0, &y0);
+            map_from_window(e.motion.xrel, e.motion.yrel, &x1, &y1);
             vmove(vx + (x1 - x0), vy + (y1 - y0));
             msgq_post(g_hwnd, 0x200, mk_state(), (uint32_t)(g_mouse_x & 0xffff) | ((uint32_t)g_mouse_y << 16));
             break;
