@@ -54,7 +54,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Two-finger twist | turn the world like a dial, 1:1 with the fingers (3D build writes the heading directly) |
 | Pinch / spread | zoom out / in, one step per 15% change in finger spread (stops when the fingers stop) |
 | Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9), WORLD (Return); command groups 1-6 below |
-| Thumb buttons, bottom left | SHIFT / CTRL / ALT, in a strip the game picture leaves free in levels |
+| Thumb buttons, bottom left | SHIFT / CTRL / ALT (off by default: `THUMB_MODS` in touch_ios.inc) |
 
 SHIFT / CTRL / ALT: hold one with your left thumb while tapping the game with your right hand, or
 tap it to apply to the next tap, long press or button (lit yellow, then off); tap twice quickly to

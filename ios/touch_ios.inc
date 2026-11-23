@@ -11,7 +11,7 @@
 //   pinch / spread       zoom out / in, one step per PINCH_STEP of finger travel
 //   buttons (levels only) row 1: Menu (Esc), Pause (P), Skip (Space), Shaman (.), Save (F9), World (Return)
 //                         row 2: command groups 1-6
-//                         thumb column, bottom left (left hand): SHIFT / CTRL / ALT. Hold while tapping with the other
+//                         thumb column, bottom left (left hand): SHIFT / CTRL / ALT (off: THUMB_MODS). Hold while tapping with the other
 //                         hand, or tap to apply to the next tap/button (double-tap locks)
 //   edge scrolling       the game scrolls while its cursor sits at a screen edge; after a touch ends near
 //                         an edge the cursor is moved inward so the map doesn't keep drifting
@@ -25,6 +25,7 @@
 // never visibly jumps to the corner. In sync (the usual case inside a level), the move is direct.
 
 #define THUMB_STRIP 100      // points reserved left of the game picture for the thumb column (levels)
+#define THUMB_MODS 0         // 1: show the SHIFT/CTRL/ALT thumb column (and shrink the picture for it)
 #define HOME_MS 40           // homing motion -> target motion (separate DirectInput batches)
 #define SETTLE_MS 40         // target motion -> button press
 #define HIDE_AFTER_MS 30     // keep holding the frame this long after the target motion
@@ -96,7 +97,7 @@ static int kbm_relative;            // relative mouse mode is on (a mouse is con
 static int kbm_active;              // the last input came from the mouse or keyboard
 int g_mice;                         // diagnostics
 // left strip kept free of the game picture: in a level, in touch mode (mouse/keyboard: full size)
-static float touch_left_reserve(void) { return in_level() && !kbm_active ? THUMB_STRIP : 0; }
+static float touch_left_reserve(void) { return THUMB_MODS && in_level() && !kbm_active ? THUMB_STRIP : 0; }
 int g_last_click_mods = -1;         // diagnostics: modifier mask of the last touch click
 static uint32_t last_touch_ms;       // last finger activity
 static void cursor_to(float gx, float gy) {
@@ -203,6 +204,7 @@ static SDL_FRect btn_rect(int i) {   // window points, right-aligned rows inside
 static int btn_at(float x, float y) {
     if (!in_level()) return -1;   // buttons exist only in a level
     for (int i = 0; i < NBTN; i++) {
+        if (!THUMB_MODS && btns[i].row == 2) continue;
         SDL_FRect r = btn_rect(i);
         if (x >= r.x - 2 && x < r.x + r.w + 2 && y >= r.y - 2 && y < r.y + r.h + 2) return i;
     }
@@ -234,6 +236,7 @@ static void touch_draw_overlay(void) {
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     float k = ps * 1.25f;   // 8x8 debug font -> 10 points
     for (int i = 0; i < NBTN; i++) {
+        if (!THUMB_MODS && btns[i].row == 2) continue;
         SDL_FRect r = btn_rect(i);
         SDL_FRect p = {r.x * ps, r.y * ps, r.w * ps, r.h * ps};
         unsigned bit = btns[i].kind == B_MOD ? 1u << (i - 6) : 0;
@@ -325,6 +328,11 @@ static void two_finger_tick(void) {
         if (spread > g_d0 * (PINCH_STEP - 1) && spread > pan) g_two_mode = 1;
         else if (SDL_fabsf(da) > TWIST_DEAD) g_two_mode = 3;
         else if (pan > JOY_DEAD) g_two_mode = 2;
+        if (g_two_mode == 2 || g_two_mode == 3) {
+            // count movement from here: the dead zone travel would otherwise land in one frame as a jump
+            g_px = (fing[0].x + fing[1].x) / 2; g_py = (fing[0].y + fing[1].y) / 2;
+            g_pa = SDL_atan2f(fing[1].y - fing[0].y, fing[1].x - fing[0].x);
+        }
     }
     if (g_two_mode == 1) {
         // one zoom step per PINCH_STEP of spread; the base moves by whole steps so nothing is lost
