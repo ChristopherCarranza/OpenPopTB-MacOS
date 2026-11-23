@@ -49,7 +49,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Tap | left click (on release, so a drag never clicks) |
 | Long press (0.5 s) | right click (query) |
 | Two-finger tap | right click |
-| One-finger drag | selection box (left button held from where the finger landed), as with a mouse |
+| One-finger drag | selection box (left button held from where the finger landed), as with a mouse; only the finger that started it counts (a resting thumb is ignored) |
 | Two-finger drag | grab and move the world: the camera follows the fingers 1:1 (3D build, direct camera write; other builds use scroll-key pulses) |
 | Two-finger twist | turn the world like a dial, 1:1 with the fingers (3D build writes the heading directly) |
 | Pinch / spread | zoom out / in with the fingers: the picture scales with the finger spread (3D build, see Direct zoom; other builds step = / - once per 15% of spread) |
@@ -83,7 +83,9 @@ The game reads only relative mouse motion and keeps its own cursor per screen, e
 rect (whole screen in menus, 64,48-576,432 in a software-rendered level), read from the mouse thread
 object (`popTB.exe` 0x973e94, `D3DPopTB.exe` 0xd0595c: cursor at +0x20, rect at +0x38). When the
 game's cursor matches ours the move is sent directly; otherwise ("homing") a huge up-left motion pins
-every cursor to the rect's corner, then the distance from that corner to the finger is sent. Frames
+every cursor to the rect's corner, then the distance from that corner to the finger is sent. Never while a
+button is held (a box being dragged): the corner sweep would press on the minimap and move the camera, so
+the move carries on from the game's own cursor instead. Frames
 drawn while homing are not shown, so the cursor never visibly jumps to the corner.
 
 The buttons show only while a level is loaded: the game's mode word (`popTB.exe` 0x599ab4,

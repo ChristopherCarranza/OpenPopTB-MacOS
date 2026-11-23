@@ -82,7 +82,7 @@ static void win_to_game(float wx, float wy, float *x, float *y) {
     map_from_window(wx, wy, x, y);
 }
 
-int g_home_count, g_touch_count;   // diagnostics (debug "stat")
+int g_home_count, g_touch_count, g_drag_resyncs;   // diagnostics (debug "stat")
 static int home_phase;              // 1: homing motion sent, target pending
 static float home_tx, home_ty;
 static uint32_t home_ms, settle_ms;
@@ -108,6 +108,16 @@ static void cursor_to(float gx, float gy) {
     if (gy < y0) gy = (float)y0; if (gy > y1 - 1) gy = (float)(y1 - 1);
     if (home_phase) { home_tx = gx; home_ty = gy; return; }
     if (cursor_in_sync()) { vmove(gx, gy); post_move(); settle_ms = now_ms(); return; }
+    if (di_mouse_btn[0] || di_mouse_btn[1] || di_mouse_btn[2]) {
+        // a button is held (a box being dragged): homing would sweep the pressed cursor to the corner, over
+        // the minimap, and move the camera there. The game is only behind on our last move or clamped it, so
+        // carry on from its own cursor once it has taken all our moves.
+        uint32_t o = mouse_obj();
+        if (o && di_mouse_count() == 0) { vx = (float)(int32_t)rd32(o + 0x20); vy = (float)(int32_t)rd32(o + 0x24); }
+        vmove(gx, gy); post_move(); settle_ms = now_ms();
+        g_drag_resyncs++;
+        return;
+    }
     raw_delta(-4096, -4096);
     g_home_count++;
     home_phase = 1; home_ms = now_ms(); home_tx = gx; home_ty = gy;
@@ -594,7 +604,9 @@ static void on_finger(const SDL_Event *e) {
     if (!f) return;
     if (e->type == SDL_EVENT_FINGER_MOTION) {
         f->x = x; f->y = y;
-        if (gesture == G_ONE && !g_long) {
+        // one-finger gestures follow the finger that started them: another one landing meanwhile (a thumb
+        // resting near the minimap) must not move the box or the cursor
+        if (gesture == G_ONE && !g_long && f == &fing[0]) {
             float dx = f->x - f->x0, dy = f->y - f->y0;
             if (!g_moved && dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
                 // drag: press the left button where the finger landed (the cursor is already there)
@@ -614,6 +626,7 @@ static void on_finger(const SDL_Event *e) {
     }
     // finger up / cancelled
     int cancelled = e->type == SDL_EVENT_FINGER_CANCELED;
+    if (gesture == G_ONE && f != &fing[0]) { finger_drop(e->tfinger.fingerID); return; }   // a stray extra finger
     finger_drop(e->tfinger.fingerID);
     switch (gesture) {
     case G_ONE:
