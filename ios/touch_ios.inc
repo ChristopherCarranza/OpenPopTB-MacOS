@@ -8,7 +8,9 @@
 //   two-finger sideways  rotate the camera (Left/Right held)
 //   pinch / spread       zoom out / in, one step per PINCH_STEP of finger travel
 //   buttons (levels only) row 1: Menu (Esc), Pause (P), Skip (Space), Shaman (.), Save (F9), World (Return)
-//                         row 2: SHIFT / CTRL / ALT for the next tap or button (double-tap locks), groups 1-6
+//                         row 2: command groups 1-6
+//                         thumb column, bottom right: SHIFT / CTRL / ALT. Hold while tapping with the other
+//                         hand, or tap to apply to the next tap/button (double-tap locks)
 //   edge scrolling       the game scrolls while its cursor sits at a screen edge; after a touch ends near
 //                         an edge the cursor is moved inward so the map doesn't keep drifting
 //   iPad pointer         absolute, like the system cursor
@@ -79,6 +81,13 @@ static int press_pending = -1;      // pointer button pressed once settled (rele
 static int release_after;           // pointer released before its press went out
 
 static int touch_owned;             // the cursor was last placed by a finger (not the iPad pointer)
+// Hardware mouse / keyboard (iPad, iPhone with a mouse): with a mouse connected the pointer is locked
+// (relative mode, as on the Mac) and mouse events take the regular desktop path in plat.c, untouched.
+// The on-screen buttons hide while the mouse or keyboard is in use and come back on the next touch.
+static int kbm_relative;            // relative mouse mode is on (a mouse is connected)
+static int kbm_active;              // the last input came from the mouse or keyboard
+int g_mice;                         // diagnostics
+int g_last_click_mods = -1;         // diagnostics: modifier mask of the last touch click
 static uint32_t last_touch_ms;       // last finger activity
 static void cursor_to(float gx, float gy) {
     g_touch_count++;
@@ -114,11 +123,13 @@ static void set_held(unsigned want) {
 enum { M_SHIFT = 1, M_CTRL = 2, M_ALT = 4 };
 static const SDL_Scancode mod_sc[3] = {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_LCTRL, SDL_SCANCODE_LALT};
 static unsigned mod_arm, mod_lock;   // armed for the next action / locked on
+static unsigned mod_hold, mod_used;  // finger held on the button / the hold modified an action
 static unsigned mods_down;           // modifier keys currently pressed for an action
 static uint32_t mods_down_ms, mods_release_ms;
 static uint32_t mod_tap_ms[3];
 #define MOD_LEAD_MS 40               // modifier down -> click (separate input batch)
-static unsigned mods_active(void) { return mod_arm | mod_lock; }
+static unsigned mods_active(void) { return mod_arm | mod_lock | mod_hold; }
+static void mods_used(unsigned m) { mod_used |= m & mod_hold; }
 static void mods_press(unsigned m) {
     for (int i = 0; i < 3; i++) if ((m & (1u << i)) && !(mods_down & (1u << i))) send_key(mod_sc[i], 1);
     mods_down |= m; mods_down_ms = now_ms();
@@ -144,15 +155,17 @@ static const Btn btns[] = {
     {"MENU", SDL_SCANCODE_ESCAPE, B_KEY, 0, 66}, {"PAUSE", SDL_SCANCODE_P, B_KEY, 0, 66},
     {"SKIP", SDL_SCANCODE_SPACE, B_KEY, 0, 66}, {"SHAMAN", SDL_SCANCODE_PERIOD, B_KEY, 0, 66},
     {"SAVE", SDL_SCANCODE_F9, B_KEY, 0, 66}, {"WORLD", SDL_SCANCODE_RETURN, B_KEY, 0, 66},
-    {"SHIFT", SDL_SCANCODE_LSHIFT, B_MOD, 1, 56}, {"CTRL", SDL_SCANCODE_LCTRL, B_MOD, 1, 56},
-    {"ALT", SDL_SCANCODE_LALT, B_MOD, 1, 56},
+    {"SHIFT", SDL_SCANCODE_LSHIFT, B_MOD, 2, 84}, {"CTRL", SDL_SCANCODE_LCTRL, B_MOD, 2, 84},
+    {"ALT", SDL_SCANCODE_LALT, B_MOD, 2, 84},
     {"1", SDL_SCANCODE_1, B_KEY, 1, 34}, {"2", SDL_SCANCODE_2, B_KEY, 1, 34}, {"3", SDL_SCANCODE_3, B_KEY, 1, 34},
     {"4", SDL_SCANCODE_4, B_KEY, 1, 34}, {"5", SDL_SCANCODE_5, B_KEY, 1, 34}, {"6", SDL_SCANCODE_6, B_KEY, 1, 34},
 };
 #define NBTN ((int)(sizeof btns / sizeof btns[0]))
 #define BTN_H 30
 #define BTN_GAP 6
-#define GROUP_GAP 14   // extra space between the modifiers and the group numbers
+#define GROUP_GAP 0
+#define THUMB_H 54     // modifier buttons: a column in the bottom-right thumb corner
+#define THUMB_GAP 10
 static int btn_down = -1;
 static unsigned btn_mods;            // modifiers pressed with the current key button
 static uint32_t btn_down_ms;
@@ -160,6 +173,17 @@ static SDL_FRect btn_rect(int i) {   // window points, right-aligned rows inside
     SDL_Rect safe; int ww, wh;
     SDL_GetWindowSize(win, &ww, &wh);
     if (!SDL_GetWindowSafeArea(win, &safe)) safe = (SDL_Rect){0, 0, ww, wh};
+    if (btns[i].row == 2) {
+        // thumb column, SHIFT nearest the corner. Centred in the black margin beside the game when
+        // the screen is wider than 4:3 (iPhone), else over the bottom-right of the game view (iPad)
+        float sc = SDL_min((float)ww / tex_w, (float)wh / tex_h);
+        float frame_r = (ww + tex_w * sc) / 2, safe_r = (float)(safe.x + safe.w);
+        float w = btns[i].w, x = safe_r - 10 - w;
+        if (safe_r - frame_r >= w + 16) x = frame_r + (safe_r - frame_r - w) / 2;
+        int slot = i - 6;   // 0 SHIFT (bottom), 1 CTRL, 2 ALT (top)
+        SDL_FRect r = {x, safe.y + safe.h - 24 - THUMB_H - slot * (THUMB_H + THUMB_GAP), w, THUMB_H};
+        return r;
+    }
     float right = safe.x + safe.w - 6;
     for (int j = NBTN - 1; j > i; j--)
         if (btns[j].row == btns[i].row) {
@@ -177,11 +201,12 @@ static int btn_at(float x, float y) {
     }
     return -1;
 }
+static int btn_key_held;             // a finger is still on the key button
 static void btn_press(int b) {
     btn_down_ms = now_ms();
-    if (btns[b].kind == B_MOD) { mod_tap(b - 6); btn_down = -1; return; }
-    btn_down = b;
+    btn_down = b; btn_key_held = 1;
     btn_mods = mods_active();
+    mods_used(btn_mods);
     if (btn_mods) mods_press(btn_mods);   // key events are ordered, so the modifier is seen first
     send_key(btns[b].sc, 1);
 }
@@ -191,10 +216,10 @@ static void btn_release(void) {
     btn_mods = 0; btn_down = -1;
 }
 static void touch_draw_overlay(void) {
-    if (!in_level()) return;
+    if (!in_level() || kbm_active) return;
     int ww, wh, ow, oh;
     SDL_GetWindowSize(win, &ww, &wh);
-    SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
+    SDL_GetWindowSizeInPixels(win, &ow, &oh);   // the render output size is letterboxed on wide screens
     float ps = ww ? (float)ow / ww : 1;
     int lw, lh; SDL_RendererLogicalPresentation mode;
     SDL_GetRenderLogicalPresentation(ren, &lw, &lh, &mode);
@@ -206,16 +231,17 @@ static void touch_draw_overlay(void) {
         SDL_FRect p = {r.x * ps, r.y * ps, r.w * ps, r.h * ps};
         unsigned bit = btns[i].kind == B_MOD ? 1u << (i - 6) : 0;
         if (bit && (mod_lock & bit)) SDL_SetRenderDrawColor(ren, 210, 90, 30, 230);         // locked
-        else if (i == btn_down || (bit && (mod_arm & bit))) SDL_SetRenderDrawColor(ren, 200, 150, 40, 210);   // pressed / armed
+        else if (i == btn_down || (bit && ((mod_arm | mod_hold) & bit))) SDL_SetRenderDrawColor(ren, 200, 150, 40, 210);   // pressed / armed / held
         else SDL_SetRenderDrawColor(ren, 0, 0, 0, 120);
         SDL_RenderFillRect(ren, &p);
         SDL_SetRenderDrawColor(ren, 230, 190, 90, 200);
         SDL_RenderRect(ren, &p);
         if (bit && (mod_lock & bit)) { SDL_FRect q = {p.x + ps, p.y + ps, p.w - 2 * ps, p.h - 2 * ps}; SDL_RenderRect(ren, &q); }
-        float tw = (float)strlen(btns[i].label) * 8 * k, th = 8 * k;
-        SDL_SetRenderScale(ren, k, k);
+        float kk = btns[i].row == 2 ? k * 1.4f : k;
+        float tw = (float)strlen(btns[i].label) * 8 * kk, th = 8 * kk;
+        SDL_SetRenderScale(ren, kk, kk);
         SDL_SetRenderDrawColor(ren, 245, 225, 160, 255);
-        SDL_RenderDebugText(ren, (p.x + (p.w - tw) / 2) / k, (p.y + (p.h - th) / 2) / k, btns[i].label);
+        SDL_RenderDebugText(ren, (p.x + (p.w - tw) / 2) / kk, (p.y + (p.h - th) / 2) / kk, btns[i].label);
         SDL_SetRenderScale(ren, 1, 1);
     }
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
@@ -226,7 +252,21 @@ static void touch_draw_overlay(void) {
 typedef struct { SDL_FingerID id; float x0, y0, x, y; } Finger;
 static Finger fing[2];
 static int nfing;
-enum { G_NONE, G_ONE, G_TWO, G_BUTTON, G_DONE };
+enum { G_NONE, G_ONE, G_TWO, G_DONE };
+// fingers resting on on-screen buttons; they don't take part in gestures, so a modifier can be held
+// with one hand while the other taps or drags the game
+typedef struct { SDL_FingerID id; int btn; uint32_t t0; } BtnFinger;
+static BtnFinger bfing[4];
+static int nbfing;
+static void bfinger_up(int k) {
+    BtnFinger bf = bfing[k]; bfing[k] = bfing[--nbfing];
+    if (btns[bf.btn].kind == B_MOD) {
+        int m = bf.btn - 6; unsigned bit = 1u << m;
+        mod_hold &= ~bit;
+        if (!(mod_used & bit) && now_ms() - bf.t0 < 400) mod_tap(m);   // short tap: arm / lock / unlock
+        mod_used &= ~bit;
+    } else if (bf.btn == btn_down) btn_key_held = 0;   // key goes up in touch_tick (>= 80 ms after down)
+}
 static int gesture, g_moved, g_long;
 static uint32_t g_t0;
 static float g_d0, g_cx0, g_cy0;
@@ -284,18 +324,22 @@ static void on_finger(const SDL_Event *e) {
         // the system knows about, start from a clean state
         int nsys = 0; SDL_Finger **fl = SDL_GetTouchFingers(e->tfinger.touchID, &nsys);
         SDL_free(fl);
-        if (nsys <= 1 && nfing) {
+        if (e->tfinger.touchID == 0xD0D0) nsys = 99;   // injected by the debug channel: no resync
+        if (nsys <= 1) while (nbfing) bfinger_up(nbfing - 1);
+        if (nsys - nbfing <= 1 && nfing) {
             set_held(0);
             nfing = 0;
-            if (gesture != G_BUTTON) gesture = G_NONE;
+            gesture = G_NONE;
+        }
+        int b = btn_at(x, y);
+        if (b >= 0 && nbfing < 4) {
+            bfing[nbfing++] = (BtnFinger){e->tfinger.fingerID, b, now_ms()};
+            if (btns[b].kind == B_MOD) { mod_hold |= 1u << (b - 6); mod_used &= ~(1u << (b - 6)); }
+            else { if (btn_down >= 0) btn_release(); btn_press(b); }
+            return;
         }
         if (nfing == 0) {
-            int b = btn_at(x, y);
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
-            if (b >= 0) {
-                if (btn_down >= 0) btn_release();
-                gesture = G_BUTTON; btn_press(b); return;
-            }
             gesture = G_ONE; g_moved = g_long = 0; g_t0 = now_ms();
             float gx, gy; win_to_game(x, y, &gx, &gy); cursor_to(gx, gy);   // cursor follows the finger (tooltips)
         } else if (nfing == 1 && gesture == G_ONE) {
@@ -307,6 +351,11 @@ static void on_finger(const SDL_Event *e) {
         } else if (nfing < 2) fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
         return;
     }
+    for (int k = 0; k < nbfing; k++)
+        if (bfing[k].id == e->tfinger.fingerID) {
+            if (e->type != SDL_EVENT_FINGER_MOTION) bfinger_up(k);
+            return;
+        }
     Finger *f = finger_of(e->tfinger.fingerID);
     if (!f) return;
     if (e->type == SDL_EVENT_FINGER_MOTION) {
@@ -329,11 +378,6 @@ static void on_finger(const SDL_Event *e) {
     int cancelled = e->type == SDL_EVENT_FINGER_CANCELED;
     finger_drop(e->tfinger.fingerID);
     switch (gesture) {
-    case G_BUTTON:
-        if (nfing == 0) {   // the key goes up in touch_tick, at least 80 ms after it went down
-            gesture = G_NONE;
-        }
-        break;
     case G_ONE:
         set_held(0);
         if (!cancelled && !g_moved && !g_long) click(0);
@@ -397,18 +441,39 @@ static int on_pointer(const SDL_Event *e) {
 }
 
 // returns 1 when the event was handled here
+static void kbm_update(void) {
+    int n = 0; SDL_MouseID *m = SDL_GetMice(&n); SDL_free(m);
+    g_mice = n;
+    int want = n > 0 && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS);
+    if (want != kbm_relative) {
+        SDL_SetWindowRelativeMouseMode(win, want);
+        kbm_relative = want;
+        if (!want) kbm_active = 0;
+    }
+}
 static int touch_event(const SDL_Event *e) {
     switch (e->type) {
-    case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_MOTION: case SDL_EVENT_FINGER_UP: case SDL_EVENT_FINGER_CANCELED:
+    case SDL_EVENT_FINGER_DOWN:
+        kbm_active = 0;
+        /* fall through */
+    case SDL_EVENT_FINGER_MOTION: case SDL_EVENT_FINGER_UP: case SDL_EVENT_FINGER_CANCELED:
         on_finger(e); return 1;
-    case SDL_EVENT_MOUSE_MOTION: case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
-        return on_pointer(e);
+    case SDL_EVENT_MOUSE_ADDED: case SDL_EVENT_MOUSE_REMOVED:
+    case SDL_EVENT_WINDOW_FOCUS_GAINED: case SDL_EVENT_WINDOW_FOCUS_LOST:
+        kbm_update(); return 0;
+    case SDL_EVENT_MOUSE_MOTION: case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: case SDL_EVENT_MOUSE_WHEEL:
+        if (kbm_relative) { kbm_active = 1; touch_owned = 0; return 0; }   // desktop path, like the Mac
+        return e->type == SDL_EVENT_MOUSE_WHEEL ? 0 : on_pointer(e);
+    case SDL_EVENT_KEY_DOWN:
+        kbm_active = 1; return 0;
     }
     return 0;
 }
 
 static void touch_tick(void) {
     uint32_t t = now_ms();
+    static uint32_t kbm_check;
+    if (t - kbm_check > 1000) { kbm_check = t; kbm_update(); }   // mice present at launch, focus changes
     if (home_phase && t - home_ms >= HOME_MS) {
         home_phase = 0;
         int x0, y0, x1, y1; cursor_rect(&x0, &y0, &x1, &y1);
@@ -422,9 +487,11 @@ static void touch_tick(void) {
         // armed modifiers go down first, in an earlier input batch than the button
         unsigned m = mods_active();
         if (m && (mods_down & m) != m) mods_press(m);
+        mods_used(m);
         if (!m || t - mods_down_ms >= MOD_LEAD_MS) {
             if (click_pending >= 0) {
                 int b = click_pending; click_pending = -1;
+                g_last_click_mods = (int)m;
                 down_ms[b] = t; mouse_button(b, 1); up_pending[b] = 1;
             }
             if (press_pending >= 0) {
@@ -441,8 +508,25 @@ static void touch_tick(void) {
     if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; click(1); }
     two_finger_tick();
     if (zoom_key && (int32_t)(t - zoom_until) >= 0) { send_key(zoom_key, 0); zoom_key = 0; }
-    if (btn_down >= 0 && gesture != G_BUTTON && t - btn_down_ms >= 80) btn_release();
+    if (btn_down >= 0 && !btn_key_held && t - btn_down_ms >= 80) btn_release();
     edge_tick(t);
 }
 
+// debug: inject a finger event (window points), so multi-finger timing can be tested in the simulator
+void touch_debug_finger(int down, int id, float x, float y) {
+    SDL_Event e; memset(&e, 0, sizeof e);
+    int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
+    e.type = down == 1 ? SDL_EVENT_FINGER_DOWN : down == 0 ? SDL_EVENT_FINGER_UP : SDL_EVENT_FINGER_MOTION;
+    e.tfinger.touchID = 0xD0D0; e.tfinger.fingerID = (SDL_FingerID)(1000 + id);
+    e.tfinger.x = x / ww; e.tfinger.y = y / wh;
+    SDL_PushEvent(&e);
+}
+void touch_debug_layout(FILE *out) {
+    int ww, wh, ow, oh, pw, ph; SDL_Rect safe = {0};
+    SDL_GetWindowSize(win, &ww, &wh); SDL_GetWindowSizeInPixels(win, &pw, &ph);
+    SDL_GetCurrentRenderOutputSize(ren, &ow, &oh); SDL_GetWindowSafeArea(win, &safe);
+    SDL_FRect r = btn_rect(6), m = btn_rect(0);
+    fprintf(out, "dbg layout: win %dx%d px %dx%d out %dx%d safe %d,%d %dx%d shift %.0f,%.0f menu %.0f,%.0f\n",
+            ww, wh, pw, ph, ow, oh, safe.x, safe.y, safe.w, safe.h, r.x, r.y, m.x, m.y);
+}
 void touch_script_tap(float gx, float gy) { cursor_to(gx, gy); click(0); }

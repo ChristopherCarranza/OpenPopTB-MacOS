@@ -187,12 +187,27 @@ static void debug_cmds(void) {
         } else if (!strncmp(line, "stat", 4)) {
 #if TARGET_OS_IPHONE
             extern int g_home_count, g_touch_count, g_zoom_in, g_zoom_out, g_edge_moves;
-            fprintf(out, "dbg stat: cursor moves %d, homings %d, cursor (%d,%d), zoom steps in %d out %d, edge moves %d, keys shift %d ctrl %d alt %d\n",
+            extern int g_mice;
+            fprintf(out, "dbg stat: cursor moves %d, homings %d, cursor (%d,%d), zoom steps in %d out %d, edge moves %d, keys shift %d ctrl %d alt %d, mice %d relative %d\n",
                     g_touch_count, g_home_count, (int)vx, (int)vy, g_zoom_in, g_zoom_out, g_edge_moves,
-                    di_keys[0x2A] != 0, di_keys[0x1D] != 0, di_keys[0x38] != 0);
+                    di_keys[0x2A] != 0, di_keys[0x1D] != 0, di_keys[0x38] != 0, g_mice, (int)SDL_GetWindowRelativeMouseMode(win));
+            extern int g_last_click_mods; fprintf(out, "dbg last click mods %d\n", g_last_click_mods);
         } else if (!strncmp(line, "edge ", 5)) {
             extern int g_edge_px; g_edge_px = atoi(line + 5);
             fprintf(out, "dbg edge %d\n", g_edge_px);
+#endif
+        } else if (!strncmp(line, "finger ", 7)) {
+#if TARGET_OS_IPHONE
+            char what[8]; int id; float fx, fy;
+            if (sscanf(line + 7, "%7s %d %f %f", what, &id, &fx, &fy) == 4) {
+                void touch_debug_finger(int, int, float, float);
+                touch_debug_finger(!strcmp(what, "down") ? 1 : !strcmp(what, "up") ? 0 : 2, id, fx, fy);
+                fprintf(out, "dbg finger %s %d\n", what, id);
+            }
+#endif
+        } else if (!strncmp(line, "layout", 6)) {
+#if TARGET_OS_IPHONE
+            void touch_debug_layout(FILE *); touch_debug_layout(out);
 #endif
         } else if (!strncmp(line, "key ", 4)) {
             char nm[64] = ""; sscanf(line + 4, "%63s", nm);
