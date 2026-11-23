@@ -51,7 +51,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Two-finger tap | right click |
 | One-finger drag | selection box (left button held from where the finger landed), as with a mouse |
 | Two-finger drag | grab and move the world: the camera follows the fingers 1:1 (3D build, direct camera write; other builds use scroll-key pulses) |
-| Two-finger twist | turn the world like a dial |
+| Two-finger twist | turn the world like a dial, 1:1 with the fingers (3D build writes the heading directly) |
 | Pinch / spread | zoom out / in, one step per 15% change in finger spread (stops when the fingers stop) |
 | Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9), WORLD (Return); command groups 1-6 below |
 | Thumb buttons, bottom left | SHIFT / CTRL / ALT, in a strip the game picture leaves free in levels |

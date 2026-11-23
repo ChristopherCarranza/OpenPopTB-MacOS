@@ -309,6 +309,7 @@ static float dist2(void) { float dx = fing[1].x - fing[0].x, dy = fing[1].y - fi
 
 static int cam_direct(void);
 static void cam_move(float dgx, float dgy);
+static void cam_turn(float radians);
 // iOS delivers each finger's motion as its own event, so between the two the spread briefly looks
 // wrong; the two-finger gesture is judged once per frame on the settled positions.
 static void two_finger_tick(void) {
@@ -349,6 +350,13 @@ static void two_finger_tick(void) {
             while (g_py - cy > PAN_STEP) { EXTEND(1, PAN_PULSE_MS); g_py -= PAN_STEP; }
             while (cx - g_px > PAN_STEP) { EXTEND(2, PAN_PULSE_MS); g_px += PAN_STEP; }
             while (g_px - cx > PAN_STEP) { EXTEND(3, PAN_PULSE_MS); g_px -= PAN_STEP; }
+        } else if (cam_direct()) {
+            // twist, 1:1: turn the heading by exactly the fingers' rotation since the last frame
+            float d = a - g_pa;
+            while (d > SDL_PI_F) d -= 2 * SDL_PI_F;
+            while (d < -SDL_PI_F) d += 2 * SDL_PI_F;
+            cam_turn(d);
+            g_pa = a;
         } else {
             float d = a - g_pa;
             while (d > SDL_PI_F) d -= 2 * SDL_PI_F;
@@ -384,6 +392,18 @@ static void cam_move(float dgx, float dgy) {   // finger movement in game pixels
     cam_fx -= ix; cam_fz -= iz;
     uint32_t x = ((v & 0xffffu) + (uint32_t)ix) & 0xffffu, z = ((v >> 16) + (uint32_t)iz) & 0xffffu;
     wr32(0x89d1ecu, (z << 16) | x);
+}
+
+// heading += fingers' turn (the game's own rotation does heading = (heading + d) & 0x7ff)
+#define CAM_TURN_SIGN (-1.0f)
+static float cam_fa;
+static void cam_turn(float radians) {
+    cam_fa += CAM_TURN_SIGN * radians * 2048.0f / (2 * SDL_PI_F);
+    int d = (int)cam_fa; cam_fa -= d;
+    if (!d) return;
+    uint32_t w = rd32(0x89d1f8u);
+    uint32_t h = ((w >> 16) + (uint32_t)d) & 0x7ffu;
+    wr32(0x89d1f8u, (w & 0xffffu) | (h << 16));
 }
 
 // keys for grab panning/turning, from the pulse timers (called every tick)
