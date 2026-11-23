@@ -17,6 +17,8 @@
 //   edge scrolling       the game scrolls while its cursor sits at a screen edge; after a touch ends near
 //                         an edge the cursor is moved inward so the map doesn't keep drifting
 //   iPad pointer         absolute, like the system cursor
+//   Apple Pencil         a finger (SDL_PEN_TOUCHID touches; pen->mouse events off); palm ignored while it
+//                         touches; hover moves the cursor
 //
 // Cursor positioning. The game reads only relative mouse motion and keeps its own cursors (one per
 // screen, plus copies), each clamped to a rect: the whole screen in menus, the 512x384 view in a
@@ -560,21 +562,41 @@ static void pan_keys_tick(void) {
     set_held(want);
 }
 
+// Apple Pencil: SDL delivers it as touches of its own device (SDL_PEN_TOUCHID; the mouse events it would
+// also make are switched off, SDL_HINT_PEN_MOUSE_EVENTS), so it works exactly like a finger: RIGHT CLICK,
+// drags, taps. While it touches the game, other fingers on the game are ignored (a resting palm); fingers
+// on the buttons still work.
+static int pen_down;
+// end a finger gesture without its tap/click (the pencil takes over)
+static void gesture_abandon(void) {
+    set_held(0);
+    if (g_drag) {
+        g_drag = 0;
+        if (press_pending >= 0) release_after = 1; else drag_release_ms = now_ms() + SETTLE_MS;
+    }
+    g_pan1 = 0;
+    nfing = 0;
+    gesture = G_NONE;
+}
 static void on_finger(const SDL_Event *e) {
     last_touch_ms = now_ms(); touch_owned = 1;
     int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
     float x = e->tfinger.x * ww, y = e->tfinger.y * wh;   // window points
+    int is_pen = e->tfinger.touchID == SDL_PEN_TOUCHID;
     if (e->type == SDL_EVENT_FINGER_DOWN) {
         // a lost finger-up would leave a ghost finger and swallow later taps: if this is the only finger
-        // the system knows about, start from a clean state
-        int nsys = 0; SDL_Finger **fl = SDL_GetTouchFingers(e->tfinger.touchID, &nsys);
-        SDL_free(fl);
-        if (e->tfinger.touchID == 0xD0D0) nsys = 99;   // injected by the debug channel: no resync
-        if (nsys <= 1) { rmb_used = 1; while (nbfing) bfinger_up(nbfing - 1); }   // (no right click from a ghost)
-        if (nsys - nbfing <= 1 && nfing) {
-            set_held(0);
-            nfing = 0;
-            gesture = G_NONE;
+        // the system knows about, start from a clean state. Not for the pencil: it is a touch device of its
+        // own, so it would always look alone and drop the fingers holding buttons (RIGHT CLICK).
+        if (!is_pen && !pen_down) {
+            int nsys = 0; SDL_Finger **fl = SDL_GetTouchFingers(e->tfinger.touchID, &nsys);
+            SDL_free(fl);
+            if (e->tfinger.touchID == 0xD0D0) nsys = 99;   // injected by the debug channel: no resync
+            if (nsys <= 1) { rmb_used = 1; while (nbfing) bfinger_up(nbfing - 1); }   // (no right click from a ghost)
+            if (nsys - nbfing <= 1 && nfing) {
+                set_held(0);
+                nfing = 0;
+                gesture = G_NONE;
+            }
         }
         int b = btn_at(x, y);
         if (b >= 0 && nbfing < 4) {
@@ -584,6 +606,10 @@ static void on_finger(const SDL_Event *e) {
             else { if (btn_down >= 0) btn_release(); btn_press(b); }
             return;
         }
+        if (is_pen) {   // the pencil always drives: a finger gesture in progress (a palm) gives way
+            if (nfing) gesture_abandon();
+            pen_down = 1;
+        } else if (pen_down) return;   // palm rejection: no finger gestures while the pencil touches
         if (nfing == 0) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
             gesture = G_ONE; g_moved = g_long = g_pan1 = 0; g_t0 = now_ms();
@@ -635,6 +661,7 @@ static void on_finger(const SDL_Event *e) {
     }
     // finger up / cancelled
     int cancelled = e->type == SDL_EVENT_FINGER_CANCELED;
+    if (is_pen) pen_down = 0;
     if (gesture == G_ONE && f != &fing[0]) { finger_drop(e->tfinger.fingerID); return; }   // a stray extra finger
     finger_drop(e->tfinger.fingerID);
     switch (gesture) {
@@ -725,6 +752,17 @@ static void kbm_update(void) {
 }
 static int touch_event(const SDL_Event *e) {
     switch (e->type) {
+    case SDL_EVENT_PEN_MOTION:
+        // a hovering pencil (where the hardware senses it) moves the cursor, so tooltips show under its tip
+        if (!(e->pmotion.pen_state & SDL_PEN_INPUT_DOWN) && !nfing && gesture == G_NONE && !home_phase) {
+            float gx, gy; win_to_game(e->pmotion.x, e->pmotion.y, &gx, &gy);
+            touch_owned = 1; last_touch_ms = now_ms(); kbm_active = 0;
+            cursor_to(gx, gy);
+        }
+        return 1;
+    case SDL_EVENT_PEN_PROXIMITY_IN: case SDL_EVENT_PEN_PROXIMITY_OUT: case SDL_EVENT_PEN_DOWN: case SDL_EVENT_PEN_UP:
+    case SDL_EVENT_PEN_BUTTON_DOWN: case SDL_EVENT_PEN_BUTTON_UP: case SDL_EVENT_PEN_AXIS:
+        return 1;   // contact comes as touch events (SDL_PEN_TOUCHID)
     case SDL_EVENT_FINGER_DOWN:
         kbm_active = 0;
         /* fall through */
@@ -734,6 +772,7 @@ static int touch_event(const SDL_Event *e) {
     case SDL_EVENT_WINDOW_FOCUS_GAINED: case SDL_EVENT_WINDOW_FOCUS_LOST:
         kbm_update(); return 0;
     case SDL_EVENT_MOUSE_MOTION: case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: case SDL_EVENT_MOUSE_WHEEL:
+        if (e->motion.which == SDL_PEN_MOUSEID) return 1;   // pencil: handled as touches (in case SDL still sends these)
         if (kbm_relative) { kbm_active = 1; touch_owned = 0; return 0; }   // desktop path, like the Mac
         return e->type == SDL_EVENT_MOUSE_WHEEL ? 0 : on_pointer(e);
     case SDL_EVENT_KEY_DOWN:
@@ -744,6 +783,13 @@ static int touch_event(const SDL_Event *e) {
 
 static void touch_tick(void) {
     uint32_t t = now_ms();
+    static uint32_t pen_check;
+    if (pen_down && t - pen_check > 500) {   // a lost pencil-up must not leave fingers ignored
+        pen_check = t;
+        int n = 0; SDL_Finger **fl = SDL_GetTouchFingers(SDL_PEN_TOUCHID, &n);
+        if (fl && n == 0) pen_down = 0;   // (no list: SDL hasn't seen a real pencil, e.g. injected for tests)
+        SDL_free(fl);
+    }
     static uint32_t kbm_check;
     if (t - kbm_check > 1000) { kbm_check = t; kbm_update(); }   // mice present at launch, focus changes
     if (home_phase && t - home_ms >= HOME_MS) {
@@ -796,11 +842,11 @@ static void touch_tick(void) {
 }
 
 // debug: inject a finger event (window points), so multi-finger timing can be tested in the simulator
-void touch_debug_finger(int down, int id, float x, float y) {
+void touch_debug_finger(int down, int id, float x, float y, int pen) {
     SDL_Event e; memset(&e, 0, sizeof e);
     int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
     e.type = down == 1 ? SDL_EVENT_FINGER_DOWN : down == 0 ? SDL_EVENT_FINGER_UP : SDL_EVENT_FINGER_MOTION;
-    e.tfinger.touchID = 0xD0D0; e.tfinger.fingerID = (SDL_FingerID)(1000 + id);
+    e.tfinger.touchID = pen ? SDL_PEN_TOUCHID : 0xD0D0; e.tfinger.fingerID = (SDL_FingerID)(1000 + id);
     e.tfinger.x = x / ww; e.tfinger.y = y / wh;
     SDL_PushEvent(&e);
 }

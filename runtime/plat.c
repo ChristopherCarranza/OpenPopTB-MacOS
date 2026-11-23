@@ -212,11 +212,11 @@ static void debug_cmds(void) {
 #endif
         } else if (!strncmp(line, "finger ", 7)) {
 #if TARGET_OS_IPHONE
-            char what[8]; int id; float fx, fy;
-            if (sscanf(line + 7, "%7s %d %f %f", what, &id, &fx, &fy) == 4) {
-                void touch_debug_finger(int, int, float, float);
-                touch_debug_finger(!strcmp(what, "down") ? 1 : !strcmp(what, "up") ? 0 : 2, id, fx, fy);
-                fprintf(out, "dbg finger %s %d\n", what, id);
+            char what[8], kind[8] = ""; int id; float fx, fy;   // "finger down|up|move ID X Y [pen]"
+            if (sscanf(line + 7, "%7s %d %f %f %7s", what, &id, &fx, &fy, kind) >= 4) {
+                void touch_debug_finger(int, int, float, float, int);
+                touch_debug_finger(!strcmp(what, "down") ? 1 : !strcmp(what, "up") ? 0 : 2, id, fx, fy, !strcmp(kind, "pen"));
+                fprintf(out, "dbg finger %s %d%s\n", what, id, kind[0] ? " pen" : "");
             }
 #endif
         } else if (!strncmp(line, "mouse ", 6)) {
@@ -355,6 +355,7 @@ void plat_init(void) {
 #if TARGET_OS_IPHONE
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");   // touches are handled as gestures (ios/touch_ios.inc)
+    SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");     // Apple Pencil: as touches only, like a finger
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS)) rt_fatal("SDL_Init: %s", SDL_GetError());
 #if TARGET_OS_IPHONE
