@@ -53,17 +53,19 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Two-finger drag | grab and move the world: the camera follows the fingers 1:1 (3D build, direct camera write; other builds use scroll-key pulses) |
 | Two-finger twist | turn the world like a dial, 1:1 with the fingers (3D build writes the heading directly) |
 | Pinch / spread | zoom out / in with the fingers: the picture scales with the finger spread (3D build, see Direct zoom; other builds step = / - once per 15% of spread) |
-| Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9), WORLD (Return); command groups 1-6 below |
-| Thumb buttons, bottom left | SHIFT / CTRL / ALT (off by default: `THUMB_MODS` in touch_ios.inc) |
+| Left column, top (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), WORLD (Return) |
+| RIGHT CLICK, bottom left (left thumb) | tap: right click where the cursor is (deselects the selection; over a unit, panel icon or building it does what a right click there does: query, zoom to the shaman...) |
+| RIGHT CLICK held + one-finger drag | grab and move the world 1:1, like a two-finger drag (no selection box) |
+| RIGHT CLICK held + tap on the game | right click at that spot (query, or deselect on empty ground) |
 
-SHIFT / CTRL / ALT: hold one with your left thumb while tapping the game with your right hand, or
-tap it to apply to the next tap, long press or button (lit yellow, then off); tap twice quickly to
-lock it on (orange), tap again to unlock. Fingers on buttons don't count towards gestures. With
-groups: SHIFT+n assigns the selected followers, n selects, CTRL+n adds to the selection, ALT+n zooms.
+Fingers on buttons don't count towards gestures, so RIGHT CLICK can be held with the left thumb while
+the right hand drags or taps. A pan keeps going if RIGHT CLICK is let go before the finger lifts. The
+SHIFT / CTRL / ALT buttons from earlier versions are still in the code but off (`THUMB_MODS`); SHAMAN,
+SAVE and the group buttons were dropped (keyboard: . F9 1-6; the game's own panel has the shaman too).
 
 On iOS the game picture is placed by the app (not SDL's letterbox): inside the horizontal safe area
 (clear of camera cutouts), and in a level, in touch mode, shrunk to leave a 100-point strip on the
-left for the thumb buttons. Menus, cutscenes and mouse/keyboard play use the full size.
+left for the button column (`LEFT_COLUMN`). Menus, cutscenes and mouse/keyboard play use the full size.
 
 Hardware mouse and keyboard (iPad, or any device with a mouse connected): the pointer is captured
 and the game gets raw mouse movement, buttons, wheel and keys exactly like the Mac app. The on-screen

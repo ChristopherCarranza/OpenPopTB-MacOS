@@ -10,10 +10,10 @@
 //   two-finger twist     turn the world with the fingers (Left/Right pulses per TWIST_STEP)
 //   pinch / spread       zoom out / in with the fingers (3D: continuous, plat_frame_hook; else one = / - step
 //                         per PINCH_STEP of spread)
-//   buttons (levels only) row 1: Menu (Esc), Pause (P), Skip (Space), Shaman (.), Save (F9), World (Return)
-//                         row 2: command groups 1-6
-//                         thumb column, bottom left (left hand): SHIFT / CTRL / ALT (off: THUMB_MODS). Hold while tapping with the other
-//                         hand, or tap to apply to the next tap/button (double-tap locks)
+//   left column (levels)  MENU (Esc), PAUSE (P), SKIP (Space), WORLD (Return) at the top; RIGHT CLICK at
+//                         the bottom for the left thumb: tap = right click at the cursor (deselect); held:
+//                         one-finger drag pans the world 1:1, a tap on the game right-clicks there (query)
+//                         (SHIFT / CTRL / ALT buttons: off, THUMB_MODS)
 //   edge scrolling       the game scrolls while its cursor sits at a screen edge; after a touch ends near
 //                         an edge the cursor is moved inward so the map doesn't keep drifting
 //   iPad pointer         absolute, like the system cursor
@@ -25,8 +25,9 @@
 // distance from that corner to the finger. Frames drawn while homing are not presented, so the cursor
 // never visibly jumps to the corner. In sync (the usual case inside a level), the move is direct.
 
-#define THUMB_STRIP 100      // points reserved left of the game picture for the thumb column (levels)
-#define THUMB_MODS 0         // 1: show the SHIFT/CTRL/ALT thumb column (and shrink the picture for it)
+#define THUMB_STRIP 100      // points reserved left of the game picture for the button column (levels)
+#define LEFT_COLUMN 1        // the button column on the left (the game picture shrinks for it in levels)
+#define THUMB_MODS 0         // SHIFT/CTRL/ALT buttons (none in the column at the moment)
 #define HOME_MS 40           // homing motion -> target motion (separate DirectInput batches)
 #define SETTLE_MS 40         // target motion -> button press
 #define HIDE_AFTER_MS 30     // keep holding the frame this long after the target motion
@@ -98,7 +99,7 @@ static int kbm_relative;            // relative mouse mode is on (a mouse is con
 static int kbm_active;              // the last input came from the mouse or keyboard
 int g_mice;                         // diagnostics
 // left strip kept free of the game picture: in a level, in touch mode (mouse/keyboard: full size)
-static float touch_left_reserve(void) { return THUMB_MODS && in_level() && !kbm_active ? THUMB_STRIP : 0; }
+static float touch_left_reserve(void) { return LEFT_COLUMN && in_level() && !kbm_active ? THUMB_STRIP : 0; }
 int g_last_click_mods = -1;         // diagnostics: modifier mask of the last touch click
 static uint32_t last_touch_ms;       // last finger activity
 static void cursor_to(float gx, float gy) {
@@ -171,51 +172,33 @@ static void mod_tap(int i) {
 }
 
 // ---- buttons ----
-enum { B_KEY, B_MOD };
-typedef struct { const char *label; SDL_Scancode sc; int kind, row; float w; } Btn;
+enum { B_KEY, B_MOD, B_RMB };
+typedef struct { const char *label; SDL_Scancode sc; int kind, mod; } Btn;   // mod: modifier index (B_MOD)
 static const Btn btns[] = {
-    {"MENU", SDL_SCANCODE_ESCAPE, B_KEY, 0, 66}, {"PAUSE", SDL_SCANCODE_P, B_KEY, 0, 66},
-    {"SKIP", SDL_SCANCODE_SPACE, B_KEY, 0, 66}, {"SHAMAN", SDL_SCANCODE_PERIOD, B_KEY, 0, 66},
-    {"SAVE", SDL_SCANCODE_F9, B_KEY, 0, 66}, {"WORLD", SDL_SCANCODE_RETURN, B_KEY, 0, 66},
-    {"SHIFT", SDL_SCANCODE_LSHIFT, B_MOD, 2, 84}, {"CTRL", SDL_SCANCODE_LCTRL, B_MOD, 2, 84},
-    {"ALT", SDL_SCANCODE_LALT, B_MOD, 2, 84},
-    {"1", SDL_SCANCODE_1, B_KEY, 1, 34}, {"2", SDL_SCANCODE_2, B_KEY, 1, 34}, {"3", SDL_SCANCODE_3, B_KEY, 1, 34},
-    {"4", SDL_SCANCODE_4, B_KEY, 1, 34}, {"5", SDL_SCANCODE_5, B_KEY, 1, 34}, {"6", SDL_SCANCODE_6, B_KEY, 1, 34},
+    {"MENU", SDL_SCANCODE_ESCAPE, B_KEY, -1}, {"PAUSE", SDL_SCANCODE_P, B_KEY, -1},
+    {"SKIP", SDL_SCANCODE_SPACE, B_KEY, -1}, {"WORLD", SDL_SCANCODE_RETURN, B_KEY, -1},
+    {"RIGHT", SDL_SCANCODE_UNKNOWN, B_RMB, -1},
 };
 #define NBTN ((int)(sizeof btns / sizeof btns[0]))
-#define BTN_H 30
-#define BTN_GAP 6
-#define GROUP_GAP 0
-#define THUMB_H 54     // modifier buttons: a column in the bottom-right thumb corner
-#define THUMB_GAP 10
+#define KEY_H 38       // column: key buttons at the top
+#define KEY_GAP 8
+#define RMB_H 110      // RIGHT CLICK at the bottom, in reach of the left thumb
+static int rmb_held, rmb_used;      // RIGHT CLICK is held / was used for something while held
 static int btn_down = -1;
 static unsigned btn_mods;            // modifiers pressed with the current key button
 static uint32_t btn_down_ms;
-static SDL_FRect btn_rect(int i) {   // window points, right-aligned rows inside the safe area
+static SDL_FRect btn_rect(int i) {   // window points: a column in the strip left of the game picture
     SDL_Rect safe; int ww, wh;
     SDL_GetWindowSize(win, &ww, &wh);
     if (!SDL_GetWindowSafeArea(win, &safe)) safe = (SDL_Rect){0, 0, ww, wh};
-    if (btns[i].row == 2) {
-        // thumb column for the LEFT hand (the right hand taps the game), SHIFT nearest the corner, in
-        // the strip the game picture leaves free on the left in a level (touch_left_reserve)
-        float w = btns[i].w, x = safe.x + (THUMB_STRIP - w) / 2;
-        int slot = i - 6;   // 0 SHIFT (bottom), 1 CTRL, 2 ALT (top)
-        SDL_FRect r = {x, safe.y + safe.h - 24 - THUMB_H - slot * (THUMB_H + THUMB_GAP), w, THUMB_H};
-        return r;
-    }
-    float right = safe.x + safe.w - 6;
-    for (int j = NBTN - 1; j > i; j--)
-        if (btns[j].row == btns[i].row) {
-            right -= btns[j].w + BTN_GAP;
-            if (btns[j].kind != btns[j - 1].kind) right -= GROUP_GAP;
-        }
-    SDL_FRect r = {right - btns[i].w, safe.y + 6 + btns[i].row * (BTN_H + BTN_GAP), btns[i].w, BTN_H};
-    return r;
+    float w = THUMB_STRIP - 16, x = safe.x + 8;
+    if (btns[i].kind == B_RMB) return (SDL_FRect){x, safe.y + safe.h - 16 - RMB_H, w, RMB_H};
+    return (SDL_FRect){x, safe.y + 8 + i * (KEY_H + KEY_GAP), w, KEY_H};
 }
 static int btn_at(float x, float y) {
-    if (!in_level()) return -1;   // buttons exist only in a level
+    if (!in_level() || !LEFT_COLUMN) return -1;   // buttons exist only in a level
     for (int i = 0; i < NBTN; i++) {
-        if (!THUMB_MODS && btns[i].row == 2) continue;
+        if (!THUMB_MODS && btns[i].kind == B_MOD) continue;
         SDL_FRect r = btn_rect(i);
         if (x >= r.x - 2 && x < r.x + r.w + 2 && y >= r.y - 2 && y < r.y + r.h + 2) return i;
     }
@@ -246,23 +229,30 @@ static void touch_draw_overlay(void) {
     SDL_SetRenderLogicalPresentation(ren, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     float k = ps * 1.25f;   // 8x8 debug font -> 10 points
+    if (!LEFT_COLUMN) return;
     for (int i = 0; i < NBTN; i++) {
-        if (!THUMB_MODS && btns[i].row == 2) continue;
+        if (!THUMB_MODS && btns[i].kind == B_MOD) continue;
         SDL_FRect r = btn_rect(i);
         SDL_FRect p = {r.x * ps, r.y * ps, r.w * ps, r.h * ps};
-        unsigned bit = btns[i].kind == B_MOD ? 1u << (i - 6) : 0;
+        unsigned bit = btns[i].kind == B_MOD ? 1u << btns[i].mod : 0;
+        int lit = i == btn_down || (btns[i].kind == B_RMB && rmb_held) || (bit && ((mod_arm | mod_hold) & bit));
         if (bit && (mod_lock & bit)) SDL_SetRenderDrawColor(ren, 210, 90, 30, 230);         // locked
-        else if (i == btn_down || (bit && ((mod_arm | mod_hold) & bit))) SDL_SetRenderDrawColor(ren, 200, 150, 40, 210);   // pressed / armed / held
+        else if (lit) SDL_SetRenderDrawColor(ren, 200, 150, 40, 210);   // pressed / armed / held
         else SDL_SetRenderDrawColor(ren, 0, 0, 0, 120);
         SDL_RenderFillRect(ren, &p);
         SDL_SetRenderDrawColor(ren, 230, 190, 90, 200);
         SDL_RenderRect(ren, &p);
         if (bit && (mod_lock & bit)) { SDL_FRect q = {p.x + ps, p.y + ps, p.w - 2 * ps, p.h - 2 * ps}; SDL_RenderRect(ren, &q); }
-        float kk = btns[i].row == 2 ? k * 1.4f : k;
-        float tw = (float)strlen(btns[i].label) * 8 * kk, th = 8 * kk;
+        int two = btns[i].kind == B_RMB;   // "RIGHT" / "CLICK" on two lines
+        float kk = two ? k * 1.4f : k;
+        float th = 8 * kk, lh = two ? th * 1.6f : 0;
         SDL_SetRenderScale(ren, kk, kk);
         SDL_SetRenderDrawColor(ren, 245, 225, 160, 255);
-        SDL_RenderDebugText(ren, (p.x + (p.w - tw) / 2) / kk, (p.y + (p.h - th) / 2) / kk, btns[i].label);
+        for (int ln = 0; ln <= two; ln++) {
+            const char *txt = ln ? "CLICK" : btns[i].label;
+            float tw = (float)strlen(txt) * 8 * kk, ty = p.y + (p.h - th - lh) / 2 + ln * lh;
+            SDL_RenderDebugText(ren, (p.x + (p.w - tw) / 2) / kk, ty / kk, txt);
+        }
         SDL_SetRenderScale(ren, 1, 1);
     }
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
@@ -281,8 +271,11 @@ static BtnFinger bfing[4];
 static int nbfing;
 static void bfinger_up(int k) {
     BtnFinger bf = bfing[k]; bfing[k] = bfing[--nbfing];
-    if (btns[bf.btn].kind == B_MOD) {
-        int m = bf.btn - 6; unsigned bit = 1u << m;
+    if (btns[bf.btn].kind == B_RMB) {
+        rmb_held = 0;
+        if (!rmb_used) click(1);   // tapped on its own: right click where the cursor is (deselect)
+    } else if (btns[bf.btn].kind == B_MOD) {
+        int m = btns[bf.btn].mod; unsigned bit = 1u << m;
         mod_hold &= ~bit;
         if (!(mod_used & bit) && now_ms() - bf.t0 < 400) mod_tap(m);   // short tap: arm / lock / unlock
         mod_used &= ~bit;
@@ -342,6 +335,27 @@ static void zoom_set(float u);
 static float g_zd0, g_zv0;   // pinch zoom: finger spread and zoom (log scale) when the pinch engaged
 // iOS delivers each finger's motion as its own event, so between the two the spread briefly looks
 // wrong; the two-finger gesture is judged once per frame on the settled positions.
+// grab: the world follows the point (cx, cy) (window points) from (g_px, g_py), then g_px/g_py move along.
+// 3D build: 1:1 camera move; otherwise arrow-key pulses (fingers down -> the ground comes towards you,
+// i.e. scroll forwards; fingers right -> the ground moves right, the camera strafes left)
+static void grab_pan(float cx, float cy) {
+    if (cam_direct()) {
+        float gx0, gy0, gx1, gy1;
+        win_to_game(g_px, g_py, &gx0, &gy0); win_to_game(cx, cy, &gx1, &gy1);
+        cam_move(gx1 - gx0, gy1 - gy0);
+        g_px = cx; g_py = cy;
+        return;
+    }
+    uint32_t t = now_ms();
+    #define EXTEND(k, ms) pan_until[k] = (pan_until[k] > t ? pan_until[k] : t) + (ms)
+    while (cy - g_py > PAN_STEP) { EXTEND(0, PAN_PULSE_MS); g_py += PAN_STEP; }
+    while (g_py - cy > PAN_STEP) { EXTEND(1, PAN_PULSE_MS); g_py -= PAN_STEP; }
+    while (cx - g_px > PAN_STEP) { EXTEND(2, PAN_PULSE_MS); g_px += PAN_STEP; }
+    while (g_px - cx > PAN_STEP) { EXTEND(3, PAN_PULSE_MS); g_px -= PAN_STEP; }
+    #undef EXTEND
+}
+static int g_pan1, g_pan1_dirty;   // one-finger pan (RIGHT CLICK held), finger moved since the last frame
+
 static void two_finger_tick(void) {
     if (!g_two_dirty || gesture != G_TWO || nfing != 2) return;
     g_two_dirty = 0;
@@ -382,19 +396,8 @@ static void two_finger_tick(void) {
         float cx = (fing[0].x + fing[1].x) / 2, cy = (fing[0].y + fing[1].y) / 2;
         float a = SDL_atan2f(fing[1].y - fing[0].y, fing[1].x - fing[0].x);
         #define EXTEND(k, ms) pan_until[k] = (pan_until[k] > t ? pan_until[k] : t) + (ms)
-        if (g_two_mode == 2 && cam_direct()) {
-            // grab, 1:1: move the camera by exactly the fingers' travel since the last frame
-            float gx0, gy0, gx1, gy1;
-            win_to_game(g_px, g_py, &gx0, &gy0); win_to_game(cx, cy, &gx1, &gy1);
-            cam_move(gx1 - gx0, gy1 - gy0);
-            g_px = cx; g_py = cy;
-        } else if (g_two_mode == 2) {
-            // grab: fingers down -> the ground comes towards you (scroll forwards); fingers right ->
-            // the ground moves right (camera strafes left)
-            while (cy - g_py > PAN_STEP) { EXTEND(0, PAN_PULSE_MS); g_py += PAN_STEP; }
-            while (g_py - cy > PAN_STEP) { EXTEND(1, PAN_PULSE_MS); g_py -= PAN_STEP; }
-            while (cx - g_px > PAN_STEP) { EXTEND(2, PAN_PULSE_MS); g_px += PAN_STEP; }
-            while (g_px - cx > PAN_STEP) { EXTEND(3, PAN_PULSE_MS); g_px -= PAN_STEP; }
+        if (g_two_mode == 2) {
+            grab_pan(cx, cy);
         } else if (cam_direct()) {
             // twist, 1:1: turn the heading by exactly the fingers' rotation since the last frame
             float d = a - g_pa;
@@ -544,7 +547,7 @@ static void drag_edge_tick(uint32_t t) {
 
 // keys for grab panning/turning, from the pulse timers (called every tick)
 static void pan_keys_tick(void) {
-    if (gesture != G_TWO || (g_two_mode != 2 && g_two_mode != 3)) {
+    if (!(gesture == G_ONE && g_pan1) && (gesture != G_TWO || (g_two_mode != 2 && g_two_mode != 3))) {
         for (int k = 0; k < 4; k++) pan_until[k] = 0;
         return;
     }
@@ -553,7 +556,7 @@ static void pan_keys_tick(void) {
     if ((int32_t)(pan_until[0] - t) > 0) want |= HK_UP;
     else if ((int32_t)(pan_until[1] - t) > 0) want |= HK_DOWN;
     int l = (int32_t)(pan_until[2] - t) > 0, r = (int32_t)(pan_until[3] - t) > 0;
-    if (l != r) want |= (l ? HK_LEFT : HK_RIGHT) | (g_two_mode == 2 ? HK_CTRL : 0);
+    if (l != r) want |= (l ? HK_LEFT : HK_RIGHT) | (g_two_mode == 2 || g_pan1 ? HK_CTRL : 0);   // pans strafe
     set_held(want);
 }
 
@@ -567,7 +570,7 @@ static void on_finger(const SDL_Event *e) {
         int nsys = 0; SDL_Finger **fl = SDL_GetTouchFingers(e->tfinger.touchID, &nsys);
         SDL_free(fl);
         if (e->tfinger.touchID == 0xD0D0) nsys = 99;   // injected by the debug channel: no resync
-        if (nsys <= 1) while (nbfing) bfinger_up(nbfing - 1);
+        if (nsys <= 1) { rmb_used = 1; while (nbfing) bfinger_up(nbfing - 1); }   // (no right click from a ghost)
         if (nsys - nbfing <= 1 && nfing) {
             set_held(0);
             nfing = 0;
@@ -576,15 +579,16 @@ static void on_finger(const SDL_Event *e) {
         int b = btn_at(x, y);
         if (b >= 0 && nbfing < 4) {
             bfing[nbfing++] = (BtnFinger){e->tfinger.fingerID, b, now_ms()};
-            if (btns[b].kind == B_MOD) { mod_hold |= 1u << (b - 6); mod_used &= ~(1u << (b - 6)); }
+            if (btns[b].kind == B_RMB) { rmb_held = 1; rmb_used = 0; }
+            else if (btns[b].kind == B_MOD) { mod_hold |= 1u << btns[b].mod; mod_used &= ~(1u << btns[b].mod); }
             else { if (btn_down >= 0) btn_release(); btn_press(b); }
             return;
         }
         if (nfing == 0) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
-            gesture = G_ONE; g_moved = g_long = 0; g_t0 = now_ms();
+            gesture = G_ONE; g_moved = g_long = g_pan1 = 0; g_t0 = now_ms();
             float gx, gy; win_to_game(x, y, &gx, &gy); cursor_to(gx, gy);   // cursor follows the finger (tooltips)
-        } else if (nfing == 1 && gesture == G_ONE && !g_drag) {
+        } else if (nfing == 1 && gesture == G_ONE && !g_drag && !g_pan1) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
             set_held(0);
             gesture = G_TWO; g_moved = 0; g_two_mode = 0; g_two_dirty = 0; g_t0 = now_ms();
@@ -608,12 +612,17 @@ static void on_finger(const SDL_Event *e) {
         // resting near the minimap) must not move the box or the cursor
         if (gesture == G_ONE && !g_long && f == &fing[0]) {
             float dx = f->x - f->x0, dy = f->y - f->y0;
-            if (!g_moved && dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
+            if (!g_moved && rmb_held && dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
+                // RIGHT CLICK held: the drag grabs the world from where the finger landed (no box)
+                g_moved = 1; g_pan1 = 1; rmb_used = 1;
+                g_px = f->x0; g_py = f->y0;
+            } else if (!g_moved && dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
                 // drag: press the left button where the finger landed (the cursor is already there)
                 g_moved = 1; g_drag = 1; drag_release_ms = 0;
                 if (up_pending[0]) mouse_button(0, 0);
                 press_pending = 0; release_after = 0;
             }
+            if (g_pan1) g_pan1_dirty = 1;   // applied once per frame in touch_tick
             if (g_drag) {
                 win_to_game(f->x, f->y, &drag_tx, &drag_ty);
                 drag_rx = drag_tx; drag_ry = drag_ty;   // unclamped, for the slow edge scroll
@@ -639,7 +648,12 @@ static void on_finger(const SDL_Event *e) {
                 if (drag_dirty && di_mouse_btn[0]) { cursor_to(drag_tx, drag_ty); drag_dirty = 0; }
                 drag_release_ms = now_ms() + SETTLE_MS;
             }
-        } else if (!cancelled && !g_moved && !g_long) click(0);
+        } else if (g_pan1) {
+            g_pan1 = 0;
+        } else if (!cancelled && !g_moved && !g_long) {
+            if (rmb_held) { rmb_used = 1; click(1); }   // RIGHT CLICK held: a tap right-clicks there (query)
+            else click(0);
+        }
         gesture = G_NONE;
         break;
     case G_TWO:
@@ -763,7 +777,8 @@ static void touch_tick(void) {
     // modifiers of a click go up once its buttons are released
     if (mods_down && btn_down < 0 && click_pending < 0 && press_pending < 0 && (int32_t)(t - mods_release_ms) >= 0
         && !di_mouse_btn[0] && !di_mouse_btn[1] && !di_mouse_btn[2]) mods_release();
-    if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; click(1); }
+    if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; if (rmb_held) rmb_used = 1; click(1); }
+    if (gesture == G_ONE && g_pan1 && g_pan1_dirty && nfing >= 1) { g_pan1_dirty = 0; grab_pan(fing[0].x, fing[0].y); }
     two_finger_tick();
     pan_keys_tick();
     // drag: follow the finger once the press is out (each move in its own input batch)
@@ -793,8 +808,10 @@ void touch_debug_layout(FILE *out) {
     int ww, wh, ow, oh, pw, ph; SDL_Rect safe = {0};
     SDL_GetWindowSize(win, &ww, &wh); SDL_GetWindowSizeInPixels(win, &pw, &ph);
     SDL_GetCurrentRenderOutputSize(ren, &ow, &oh); SDL_GetWindowSafeArea(win, &safe);
-    SDL_FRect r = btn_rect(6), m = btn_rect(0);
-    fprintf(out, "dbg layout: win %dx%d px %dx%d out %dx%d safe %d,%d %dx%d shift %.0f,%.0f menu %.0f,%.0f\n",
-            ww, wh, pw, ph, ow, oh, safe.x, safe.y, safe.w, safe.h, r.x, r.y, m.x, m.y);
+    SDL_FRect r = btn_rect(NBTN - 1), m = btn_rect(0);
+    fprintf(out, "dbg layout: win %dx%d px %dx%d out %dx%d safe %d,%d %dx%d rclick %.0f,%.0f %.0fx%.0f menu %.0f,%.0f\n",
+            ww, wh, pw, ph, ow, oh, safe.x, safe.y, safe.w, safe.h, r.x, r.y, r.w, r.h, m.x, m.y);
+    fprintf(out, "dbg rclick held %d used %d, button fingers %d, fingers %d, gesture %d, pan1 %d, moved %d long %d\n",
+            rmb_held, rmb_used, nbfing, nfing, gesture, g_pan1, g_moved, g_long);
 }
 void touch_script_tap(float gx, float gy) { cursor_to(gx, gy); click(0); }
