@@ -126,6 +126,8 @@ static void cursor_diff(void) {
 //   rect         lists int quads that look like a clamp rectangle (x0<x1<=640, y0<y1<=480)
 static void mouse_button(int b, int down);
 static uint32_t mk_state(void);
+static void send_key(SDL_Scancode sc, int down);
+SDL_Scancode g_hold_sc; uint32_t g_hold_until;
 static uint32_t dc[8192]; static uint8_t dk[8192]; static int ndc;
 static int near(int v, int t, int tol) { return v >= t - tol && v <= t + tol; }
 static void debug_cmds(void) {
@@ -181,7 +183,10 @@ static void debug_cmds(void) {
             char nm[64] = "", dp[1200]; sscanf(line + 5, "%63s", nm);
             snprintf(dp, sizeof dp, "%s/Documents/dump_%s.bin", getenv("HOME") ? getenv("HOME") : ".", nm);
             FILE *df = fopen(dp, "wb");
-            if (df) { fwrite(PTR(0x00400000u), 1, 0x00c00000u, df); fclose(df); }
+            extern uint32_t brk_ptr;
+            uint32_t end = brk_ptr > 0x01000000u ? brk_ptr : 0x01000000u;
+            if (end - 0x00400000u > 0x10000000u) end = 0x10400000u;   // cap 256 MB
+            if (df) { fwrite(PTR(0x00400000u), 1, end - 0x00400000u, df); fclose(df); }
             fprintf(out, "dbg dump %s %s\n", nm, df ? "ok" : "failed");
         } else if (!strncmp(line, "stall ", 6)) {
             void dsound_debug_stall(int); int on = atoi(line + 6); dsound_debug_stall(on);
@@ -221,6 +226,20 @@ static void debug_cmds(void) {
 #if TARGET_OS_IPHONE
             void touch_debug_layout(FILE *); touch_debug_layout(out);
 #endif
+        } else if (!strncmp(line, "hold ", 5)) {
+            // hold NAME MS: key down now, up after exactly MS (released in plat_pump)
+            extern SDL_Scancode g_hold_sc; extern uint32_t g_hold_until;
+            char nm[64] = ""; int ms = 0; sscanf(line + 5, "%63s %d", nm, &ms);
+            g_hold_sc = SDL_GetScancodeFromName(nm); g_hold_until = now_ms() + (uint32_t)ms;
+            send_key(g_hold_sc, 1);
+            fprintf(out, "dbg hold %s %d\n", nm, ms);
+        } else if (!strncmp(line, "keydown ", 8) || !strncmp(line, "keyup ", 6)) {
+            int dn = line[3] == 'd'; char nm[64] = "";
+            sscanf(line + (dn ? 8 : 6), "%63s", nm);
+            SDL_Event ev; memset(&ev, 0, sizeof ev);
+            ev.type = dn ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP; ev.key.scancode = SDL_GetScancodeFromName(nm); ev.key.down = dn;
+            SDL_PushEvent(&ev);
+            fprintf(out, "dbg %s %s\n", dn ? "keydown" : "keyup", nm);
         } else if (!strncmp(line, "key ", 4)) {
             char nm[64] = ""; sscanf(line + 4, "%63s", nm);
             SDL_Event ev; memset(&ev, 0, sizeof ev);
@@ -556,6 +575,7 @@ void plat_pump(void) {
     if (!pthread_main_np()) return;   // Cocoa only accepts events on the main thread
     if (nscript) script_tick();
     if (getenv("POPTB_DEBUG_CMDS")) debug_cmds();
+    if (g_hold_sc && (int32_t)(now_ms() - g_hold_until) >= 0) { send_key(g_hold_sc, 0); g_hold_sc = 0; }
 #if TARGET_OS_IPHONE
     touch_tick();
 #endif

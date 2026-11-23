@@ -307,6 +307,8 @@ static void finger_drop(SDL_FingerID id) {
 }
 static float dist2(void) { float dx = fing[1].x - fing[0].x, dy = fing[1].y - fing[0].y; return SDL_sqrtf(dx * dx + dy * dy); }
 
+static int cam_direct(void);
+static void cam_move(float dgx, float dgy);
 // iOS delivers each finger's motion as its own event, so between the two the spread briefly looks
 // wrong; the two-finger gesture is judged once per frame on the settled positions.
 static void two_finger_tick(void) {
@@ -334,7 +336,13 @@ static void two_finger_tick(void) {
         float cx = (fing[0].x + fing[1].x) / 2, cy = (fing[0].y + fing[1].y) / 2;
         float a = SDL_atan2f(fing[1].y - fing[0].y, fing[1].x - fing[0].x);
         #define EXTEND(k, ms) pan_until[k] = (pan_until[k] > t ? pan_until[k] : t) + (ms)
-        if (g_two_mode == 2) {
+        if (g_two_mode == 2 && cam_direct()) {
+            // grab, 1:1: move the camera by exactly the fingers' travel since the last frame
+            float gx0, gy0, gx1, gy1;
+            win_to_game(g_px, g_py, &gx0, &gy0); win_to_game(cx, cy, &gx1, &gy1);
+            cam_move(gx1 - gx0, gy1 - gy0);
+            g_px = cx; g_py = cy;
+        } else if (g_two_mode == 2) {
             // grab: fingers down -> the ground comes towards you (scroll forwards); fingers right ->
             // the ground moves right (camera strafes left)
             while (cy - g_py > PAN_STEP) { EXTEND(0, PAN_PULSE_MS); g_py += PAN_STEP; }
@@ -350,6 +358,32 @@ static void two_finger_tick(void) {
         }
         #undef EXTEND
     }
+}
+
+// ---- direct camera (D3DPopTB.exe 1.01) ----
+// The local player's view block: 0x89d1ec = camera centre (u16 X, u16 Z; the world wraps at 65536),
+// 0x89d1f8 high 16 bits = heading (2048 per turn). Scrolling forward moves along
+// (sin t, -cos t), t = (1023 - heading) * 2pi/2048. Writing the centre moves the view on the next frame,
+// which lets a two-finger drag follow the fingers exactly instead of at the scroll keys' fixed speed.
+// Scale (world units per game pixel of finger travel) was measured at the default zoom; ground further
+// away moves less on screen, so it is a compromise between near and far.
+#define CAM_KX 10.0f   // sideways
+#define CAM_KY 30.0f   // forwards/backwards (foreshortened)
+static int cam_direct(void) {
+    extern const char *g_exe_name;
+    return !strcasecmp(g_exe_name, "D3DPopTB.exe") && rd8(0x89c6f0u) == 0;   // local player 0 (single player)
+}
+static float cam_fx, cam_fz;   // sub-unit remainders
+static void cam_move(float dgx, float dgy) {   // finger movement in game pixels
+    uint32_t v = rd32(0x89d1ecu);
+    float t = (1023.0f - (float)(rd32(0x89d1f8u) >> 16)) * 2 * SDL_PI_F / 2048;
+    float fx = SDL_sinf(t), fz = -SDL_cosf(t), rx = SDL_cosf(t), rz = SDL_sinf(t);
+    float fwd = dgy * CAM_KY, side = dgx * CAM_KX;   // fingers down -> forward; fingers right -> camera left
+    cam_fx += fwd * fx + side * rx; cam_fz += fwd * fz + side * rz;
+    int ix = (int)cam_fx, iz = (int)cam_fz;
+    cam_fx -= ix; cam_fz -= iz;
+    uint32_t x = ((v & 0xffffu) + (uint32_t)ix) & 0xffffu, z = ((v >> 16) + (uint32_t)iz) & 0xffffu;
+    wr32(0x89d1ecu, (z << 16) | x);
 }
 
 // keys for grab panning/turning, from the pulse timers (called every tick)

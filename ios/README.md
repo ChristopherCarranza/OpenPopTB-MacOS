@@ -50,7 +50,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Long press (0.5 s) | right click (query) |
 | Two-finger tap | right click |
 | One-finger drag | selection box (left button held from where the finger landed), as with a mouse |
-| Two-finger drag | grab and move the world: it follows the fingers, stops when they stop |
+| Two-finger drag | grab and move the world: the camera follows the fingers 1:1 (3D build, direct camera write; other builds use scroll-key pulses) |
 | Two-finger twist | turn the world like a dial |
 | Pinch / spread | zoom out / in, one step per 15% change in finger spread (stops when the fingers stop) |
 | Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9), WORLD (Return); command groups 1-6 below |
@@ -83,6 +83,14 @@ drawn while homing are not shown, so the cursor never visibly jumps to the corne
 
 The buttons show only while a level is loaded: the game's mode word (`popTB.exe` 0x599ab4,
 `D3DPopTB.exe` 0x5d45a8) is 1 in menus, world select and cutscenes, 3 in a level.
+
+## Direct camera (D3DPopTB.exe 1.01)
+The local player's view block: `0x89d1ec` = camera centre (u16 X, u16 Z, wraps at 65536),
+`0x89d1f8` high 16 bits = heading (2048 per turn); scrolling forward moves along
+(sin t, -cos t) with t = (1023 - heading)·2π/2048. Writing the centre moves the view on the next frame.
+Two-finger panning converts finger travel (game pixels) to world units with CAM_KX / CAM_KY
+(measured at the default zoom). Note: `0x5fe308`/`0x5fe30c` change while scrolling but are not the
+camera (writing them does nothing).
 
 ## Audio stalls
 Videos (and the intro) pace themselves on DirectSound play positions, which only move when the audio
