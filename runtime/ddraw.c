@@ -217,7 +217,7 @@ COMFN(s_Unlock, 1) {
     Surf *s = S(THIS);
     s->locked = 0;
     s->gen++;
-    if (s->primary) present_surf(s);
+    if (s->primary) { present_surf(s); plat_frame_hook(R, 0); }
     return 0;
 }
 COMFN(s_Flip, 2) {
@@ -231,7 +231,7 @@ COMFN(s_Flip, 2) {
         Surf *b = S(s->back);
         uint32_t t = s->mem; s->mem = b->mem; b->mem = t;
     }
-    if (s->primary) present_surf(s);
+    if (s->primary) { present_surf(s); plat_frame_hook(R, 1); }
     return 0;
 }
 COMFN(s_IsLost, 0) { return 0; }
@@ -321,7 +321,7 @@ COMFN(s_Blt, 5) {
         blit(d, dx, dy, dw, dh, s, sx, sy, sw, sh, key, ck);
     }
     d->gen++;
-    if (d->primary) present_surf(d);
+    if (d->primary) { present_surf(d); plat_frame_hook(R, 2); }
     return 0;
 }
 COMFN(s_BltFast, 5) {
@@ -333,7 +333,7 @@ COMFN(s_BltFast, 5) {
     int key = (ARG(5) & 1) && s->has_ck;
     blit(d, x, y, sw, sh, s, sx, sy, sw, sh, key, s->ck_lo);
     d->gen++;
-    if (d->primary) present_surf(d);
+    if (d->primary) { present_surf(d); plat_frame_hook(R, 3); }
     return 0;
 }
 COMFN(s_EnumAttachedSurfaces, 2) {

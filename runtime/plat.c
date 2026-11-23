@@ -199,6 +199,8 @@ static void debug_cmds(void) {
                     g_touch_count, g_home_count, (int)vx, (int)vy, g_zoom_in, g_zoom_out, g_edge_moves,
                     di_keys[0x2A] != 0, di_keys[0x1D] != 0, di_keys[0x38] != 0, g_mice, (int)SDL_GetWindowRelativeMouseMode(win));
             extern int g_last_click_mods; fprintf(out, "dbg last click mods %d\n", g_last_click_mods);
+        } else if (!strncmp(line, "zoomu ", 6)) {
+            void touch_debug_zoom(FILE *, float); touch_debug_zoom(out, (float)atof(line + 6));
         } else if (!strncmp(line, "edge ", 5)) {
             extern int g_edge_px; g_edge_px = atoi(line + 5);
             fprintf(out, "dbg edge %d\n", g_edge_px);
@@ -568,6 +570,9 @@ static void send_key(SDL_Scancode sc, int down) {
 
 #if TARGET_OS_IPHONE
 #include "../ios/touch_ios.inc"
+void plat_frame_hook(CPU *R, int site) { touch_frame_hook(R, site); }
+#else
+void plat_frame_hook(CPU *R, int site) { (void)R; (void)site; }
 #endif
 
 void plat_pump(void) {

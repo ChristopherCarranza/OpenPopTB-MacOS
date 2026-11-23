@@ -52,7 +52,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | One-finger drag | selection box (left button held from where the finger landed), as with a mouse |
 | Two-finger drag | grab and move the world: the camera follows the fingers 1:1 (3D build, direct camera write; other builds use scroll-key pulses) |
 | Two-finger twist | turn the world like a dial, 1:1 with the fingers (3D build writes the heading directly) |
-| Pinch / spread | zoom out / in, one step per 15% change in finger spread (stops when the fingers stop) |
+| Pinch / spread | zoom out / in with the fingers: the picture scales with the finger spread (3D build, see Direct zoom; other builds step = / - once per 15% of spread) |
 | Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9), WORLD (Return); command groups 1-6 below |
 | Thumb buttons, bottom left | SHIFT / CTRL / ALT (off by default: `THUMB_MODS` in touch_ios.inc) |
 
@@ -92,6 +92,18 @@ Two-finger panning converts finger travel (game pixels) to world units with CAM_
 (measured at the default zoom). Note: `0x5fe308`/`0x5fe30c` change while scrolling but are not the
 camera (writing them does nothing).
 
+## Direct zoom (D3DPopTB.exe 1.01)
+The zoom keys step through four camera presets (94-byte records at `0x88f0c0`, group `[0x89c6ee]` of five,
+current one `[0x89c6ec]`): from close to far 3, 0, 2, 4. Each step changes distance and tilt (0 to 2 is
+mostly tilt, to a top-down view). The game's scripted camera blends presets with `f_41c700(z, 0x4000)`
+(preset 0 of the group towards preset 2 for z > 0, 3 for z < 0) and rebuilds the view. Pinch zoom calls it
+through `guest_call` from the DirectDraw present paths (`plat_frame_hook`, on the game thread between
+frames), with the two neighbouring presets copied into slots 0 and 2 for the call and put back right after,
+so any point between any two stops can be shown. The pinch maps finger spread to a log scale along the
+stops (`zweight`, measured from on-screen sizes), so doubling the spread roughly doubles the picture. It
+is skipped while the scripted camera runs (`0x969bd7` bit 0: flybys, tutorial). After each change
+`[0x89c6ec]` is set to the nearest stop so = / - carry on from there. Debug: `zoomu U` (U = 0..3).
+
 ## Audio stalls
 Videos (and the intro) pace themselves on DirectSound play positions, which only move when the audio
 device asks for sound. If the device stops (phone call, Bluetooth/route change, audio server
@@ -101,7 +113,7 @@ of silence from the device, so nothing waits forever; the device takes over agai
 ## Debugging
 `POPTB_DEBUG_CMDS=1` makes the app read commands from `Documents/poptb_cmd.txt` twice a second and
 append results to `Documents/poptb_dbg.txt`: `find X Y T`, `filt X Y T`, `peek ADDR N`,
-`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `mouse down|up|move X Y` (raw left button, game pixels), `edge N`, `finger down|up|move ID X Y` (inject touches, window points), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `dump NAME` (0x400000-0x1000000 to
+`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `mouse down|up|move X Y` (raw left button, game pixels), `edge N`, `finger down|up|move ID X Y` (inject touches, window points), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `zoomu U` (pinch-zoom position 0..3), `dump NAME` (0x400000-0x1000000 to
 `Documents/dump_NAME.bin`, for diffing game state between screens), `stall 1|0` (ignore the audio
 device, to test the stall watchdog). The input script (`--script`) also takes
 `ttap:x,y` (touch tap in game coordinates).

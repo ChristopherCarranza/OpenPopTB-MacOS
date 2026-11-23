@@ -8,7 +8,8 @@
 //   two-finger drag      grab and move the world: it follows the fingers and stops when they stop
 //                         (each PAN_STEP of travel holds an arrow / Ctrl+arrow key for PAN_PULSE_MS)
 //   two-finger twist     turn the world with the fingers (Left/Right pulses per TWIST_STEP)
-//   pinch / spread       zoom out / in, one step per PINCH_STEP of finger travel
+//   pinch / spread       zoom out / in with the fingers (3D: continuous, plat_frame_hook; else one = / - step
+//                         per PINCH_STEP of spread)
 //   buttons (levels only) row 1: Menu (Esc), Pause (P), Skip (Space), Shaman (.), Save (F9), World (Return)
 //                         row 2: command groups 1-6
 //                         thumb column, bottom left (left hand): SHIFT / CTRL / ALT (off: THUMB_MODS). Hold while tapping with the other
@@ -313,6 +314,12 @@ static float dist2(void) { float dx = fing[1].x - fing[0].x, dy = fing[1].y - fi
 static int cam_direct(void);
 static void cam_move(float dgx, float dgy);
 static void cam_turn(float radians);
+static int zoom_direct(void);
+static float zoom_now(void);
+static float zoom_v(float u);
+static float zoom_u(float v);
+static void zoom_set(float u);
+static float g_zd0, g_zv0;   // pinch zoom: finger spread and zoom (log scale) when the pinch engaged
 // iOS delivers each finger's motion as its own event, so between the two the spread briefly looks
 // wrong; the two-finger gesture is judged once per frame on the settled positions.
 static void two_finger_tick(void) {
@@ -328,13 +335,23 @@ static void two_finger_tick(void) {
         if (spread > g_d0 * (PINCH_STEP - 1) && spread > pan) g_two_mode = 1;
         else if (SDL_fabsf(da) > TWIST_DEAD) g_two_mode = 3;
         else if (pan > JOY_DEAD) g_two_mode = 2;
+        if (g_two_mode == 1) { g_zd0 = d; g_zv0 = zoom_v(zoom_now()); }   // pinch counts from here too
         if (g_two_mode == 2 || g_two_mode == 3) {
             // count movement from here: the dead zone travel would otherwise land in one frame as a jump
             g_px = (fing[0].x + fing[1].x) / 2; g_py = (fing[0].y + fing[1].y) / 2;
             g_pa = SDL_atan2f(fing[1].y - fing[0].y, fing[1].x - fing[0].x);
         }
     }
-    if (g_two_mode == 1) {
+    if (g_two_mode == 1 && zoom_direct() && g_zd0 > 0) {
+        // 1:1: the picture scales with the finger spread (log scale along the game's zoom stops)
+        g_moved = 1;
+        float v = g_zv0 - SDL_logf(d / g_zd0), vmax = zoom_v(3);
+        if (v < 0 || v > vmax) {   // at an end: rebase, so turning back responds at once
+            v = v < 0 ? 0 : vmax;
+            g_zv0 = v; g_zd0 = d;
+        }
+        zoom_set(zoom_u(v));
+    } else if (g_two_mode == 1) {
         // one zoom step per PINCH_STEP of spread; the base moves by whole steps so nothing is lost
         g_moved = 1;
         while (d > g_d0 * PINCH_STEP) { zoom_step(1); g_d0 *= PINCH_STEP; }
@@ -412,6 +429,74 @@ static void cam_turn(float radians) {
     uint32_t w = rd32(0x89d1f8u);
     uint32_t h = ((w >> 16) + (uint32_t)d) & 0x7ffu;
     wr32(0x89d1f8u, (w & 0xffffu) | (h << 16));
+}
+
+// ---- direct zoom (D3DPopTB.exe 1.01) ----
+// The game's zoom keys step through camera presets (94-byte records at 0x88f0c0, group [0x89c6ee] of 5,
+// current one [0x89c6ec]); from close to far they are 3, 0, 2, 4, and each step changes distance and tilt.
+// The scripted camera blends presets with f_41c700(z, 0x4000): preset 0 of the group towards preset 2
+// (z > 0) or 3 (z < 0), then rebuilds the view. Pinch zoom calls it with presets copied into slots 0 and 2
+// for the stretch between any two neighbours, from the game thread between frames (plat_frame_hook), and
+// puts the slots back right after. Position on the chain: u = 0 (preset 3) .. 3 (preset 4).
+#define ZP_BASE 0x88f0c0u
+#define ZP_SIZE 94
+static const int zchain[4] = {3, 0, 2, 4};
+static float zoom_want = -1;        // chain position to apply on the next frame (< 0: nothing)
+static float zoom_have = -1;        // last applied
+int g_hook_n[4], g_zoom_applied;    // diagnostics
+static uint32_t zslot(int i) { return ZP_BASE + (uint32_t)((int8_t)rd8(0x89c6eeu) * 5 + i) * ZP_SIZE; }
+static int zoom_direct(void) {   // our zoom may drive the camera: 3D game, in a level, no scripted camera
+    return cam_direct() && in_level() && !(rd8(0x969bd7u) & 1);
+}
+// How much the picture scales across each stretch (measured: people on screen 200 -> 70 px from preset 3
+// to 0; 0 -> 2 is mostly tilt, so it gets a short stretch; 75 -> 32 px from 2 to 4), as natural logs, so a
+// pinch that doubles the finger spread doubles the picture.
+static const float zweight[3] = {1.03f, 0.40f, 0.83f};
+static float zoom_v(float u) {
+    float v = 0;
+    for (int k = 0; k < 3; k++) { float t = u - (float)k; v += zweight[k] * (t < 0 ? 0 : t > 1 ? 1 : t); }
+    return v;
+}
+static float zoom_u(float v) {
+    for (int k = 0; k < 3; k++) { if (v <= zweight[k]) return (float)k + (v < 0 ? 0 : v / zweight[k]); v -= zweight[k]; }
+    return 3;
+}
+static uint32_t zoom_live;          // the view's distance field after our last apply
+static void zoom_set(float u) { zoom_want = u; }
+static float zoom_now(void) {    // chain position of the current view
+    if (zoom_have >= 0 && rd32(0x88f00cu) == zoom_live) return zoom_have;   // still ours (no key/preset since)
+    zoom_have = -1;
+    int idx = rd8(0x89c6ecu);
+    for (int k = 0; k < 4; k++) if (zchain[k] == idx) return (float)k;
+    return 1;
+}
+static void zoom_apply(CPU *R, float u) {
+    if (u < 0) u = 0;
+    if (u > 3) u = 3;
+    int k = u >= 2 ? 2 : (int)u;
+    float t = u - (float)k;
+    uint8_t s0[ZP_SIZE], s2[ZP_SIZE], a[ZP_SIZE], b[ZP_SIZE];
+    memcpy(a, PTR(zslot(zchain[k])), ZP_SIZE); memcpy(b, PTR(zslot(zchain[k + 1])), ZP_SIZE);
+    memcpy(s0, PTR(zslot(0)), ZP_SIZE); memcpy(s2, PTR(zslot(2)), ZP_SIZE);
+    memcpy(PTR(zslot(0)), a, ZP_SIZE); memcpy(PTR(zslot(2)), b, ZP_SIZE);
+    int z = (int)(t * 0x4000 + 0.5f);
+    guest_call(R, 0x41c700u, 2, (uint32_t)z, 0x4000u);
+    memcpy(PTR(zslot(0)), s0, ZP_SIZE); memcpy(PTR(zslot(2)), s2, ZP_SIZE);
+    wr8(0x89c6ecu, (uint8_t)zchain[(int)(u + 0.5f)]);   // the zoom keys carry on from the nearest preset
+    zoom_have = u; zoom_live = rd32(0x88f00cu);
+    g_zoom_applied++;
+}
+// called from the DirectDraw present paths (game thread, between frames)
+void touch_frame_hook(CPU *R, int site) {
+    if (site >= 0 && site < 4) g_hook_n[site]++;
+    if (zoom_want < 0) return;
+    float u = zoom_want; zoom_want = -1;
+    if (zoom_direct()) zoom_apply(R, u);
+}
+void touch_debug_zoom(FILE *out, float u) {
+    zoom_want = u;
+    fprintf(out, "dbg zoomu %.2f (now %.2f, idx %d, hooks %d/%d/%d/%d, applied %d)\n", u, zoom_now(), rd8(0x89c6ecu),
+            g_hook_n[0], g_hook_n[1], g_hook_n[2], g_hook_n[3], g_zoom_applied);
 }
 
 // keys for grab panning/turning, from the pulse timers (called every tick)
