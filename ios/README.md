@@ -49,8 +49,9 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Tap | left click (on release, so a drag never clicks) |
 | Long press (0.5 s) | right click (query) |
 | Two-finger tap | right click |
-| One-finger drag | scroll the map, joystick style (arrows / Ctrl+arrows held while dragged) |
-| Two-finger sideways drag | rotate the camera |
+| One-finger drag | selection box (left button held from where the finger landed), as with a mouse |
+| Two-finger drag | grab and move the world: it follows the fingers, stops when they stop |
+| Two-finger twist | turn the world like a dial |
 | Pinch / spread | zoom out / in, one step per 15% change in finger spread (stops when the fingers stop) |
 | Buttons, top right (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), SHAMAN (.), SAVE (F9), WORLD (Return); command groups 1-6 below |
 | Thumb buttons, bottom left | SHIFT / CTRL / ALT, in a strip the game picture leaves free in levels |
@@ -92,7 +93,7 @@ of silence from the device, so nothing waits forever; the device takes over agai
 ## Debugging
 `POPTB_DEBUG_CMDS=1` makes the app read commands from `Documents/poptb_cmd.txt` twice a second and
 append results to `Documents/poptb_dbg.txt`: `find X Y T`, `filt X Y T`, `peek ADDR N`,
-`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `edge N`, `finger down|up|move ID X Y` (inject touches, window points), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `dump NAME` (0x400000-0x1000000 to
+`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `mouse down|up|move X Y` (raw left button, game pixels), `edge N`, `finger down|up|move ID X Y` (inject touches, window points), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `dump NAME` (0x400000-0x1000000 to
 `Documents/dump_NAME.bin`, for diffing game state between screens), `stall 1|0` (ignore the audio
 device, to test the stall watchdog). The input script (`--script`) also takes
 `ttap:x,y` (touch tap in game coordinates).

@@ -124,6 +124,8 @@ static void cursor_diff(void) {
 //   find X Y T   fresh search for 32/16-bit pairs within +-T of (X,Y)     filt X Y T   keep those still matching
 //   peek ADDR N  dumps N 32-bit words                                     poke ADDR V  writes a 32-bit word
 //   rect         lists int quads that look like a clamp rectangle (x0<x1<=640, y0<y1<=480)
+static void mouse_button(int b, int down);
+static uint32_t mk_state(void);
 static uint32_t dc[8192]; static uint8_t dk[8192]; static int ndc;
 static int near(int v, int t, int tol) { return v >= t - tol && v <= t + tol; }
 static void debug_cmds(void) {
@@ -205,6 +207,16 @@ static void debug_cmds(void) {
                 fprintf(out, "dbg finger %s %d\n", what, id);
             }
 #endif
+        } else if (!strncmp(line, "mouse ", 6)) {
+            // mouse down|up|move X Y (game pixels): raw left-button drive, for testing drags
+            char what[8]; float mx, my;
+            if (sscanf(line + 6, "%7s %f %f", what, &mx, &my) == 3) {
+                vmove(mx, my);
+                msgq_post(g_hwnd, 0x200, mk_state(), (uint32_t)(g_mouse_x & 0xffff) | ((uint32_t)g_mouse_y << 16));
+                if (!strcmp(what, "down")) mouse_button(0, 1);
+                else if (!strcmp(what, "up")) mouse_button(0, 0);
+                fprintf(out, "dbg mouse %s %.0f %.0f\n", what, mx, my);
+            }
         } else if (!strncmp(line, "layout", 6)) {
 #if TARGET_OS_IPHONE
             void touch_debug_layout(FILE *); touch_debug_layout(out);

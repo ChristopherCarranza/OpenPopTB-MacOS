@@ -4,8 +4,10 @@
 //   tap                  left click (on release, so a drag is never a click)
 //   long press           right click (query / cancel)
 //   two-finger tap       right click
-//   one-finger drag      scroll the map, joystick style (arrow keys / Ctrl+arrows held)
-//   two-finger sideways  rotate the camera (Left/Right held)
+//   one-finger drag      selection box (left button held from where the finger landed), as with a mouse
+//   two-finger drag      grab and move the world: it follows the fingers and stops when they stop
+//                         (each PAN_STEP of travel holds an arrow / Ctrl+arrow key for PAN_PULSE_MS)
+//   two-finger twist     turn the world with the fingers (Left/Right pulses per TWIST_STEP)
 //   pinch / spread       zoom out / in, one step per PINCH_STEP of finger travel
 //   buttons (levels only) row 1: Menu (Esc), Pause (P), Skip (Space), Shaman (.), Save (F9), World (Return)
 //                         row 2: command groups 1-6
@@ -28,7 +30,12 @@
 #define HIDE_AFTER_MS 30     // keep holding the frame this long after the target motion
 #define TAP_SLOP 22.0f       // points a finger may wander and still be a tap
 #define LONG_MS 500          // long press -> right click
-#define JOY_DEAD 28.0f       // drag distance before scrolling/rotating starts (points)
+#define JOY_DEAD 28.0f       // two-finger travel before panning starts (points)
+#define TWIST_DEAD 0.30f     // two-finger twist before rotating starts (radians, ~17 degrees)
+#define PAN_STEP 10.0f       // finger travel (points) per pan pulse
+#define PAN_PULSE_MS 45      // key hold per pan pulse
+#define TWIST_STEP 0.06f     // finger turn (radians) per rotate pulse
+#define TWIST_PULSE_MS 45
 #define PINCH_STEP 1.15f     // finger spread ratio per zoom step
 #define ZOOM_PULSE_MS 90     // how long one zoom step holds the zoom key
 
@@ -269,7 +276,14 @@ static void bfinger_up(int k) {
 }
 static int gesture, g_moved, g_long;
 static uint32_t g_t0;
-static float g_d0, g_cx0, g_cy0;
+static float g_d0, g_cx0, g_cy0, g_a0;
+// grab-the-world panning/turning: held keys run until these times, extended by finger travel
+static uint32_t pan_until[4];        // 0 up, 1 down, 2 left, 3 right (of the camera move)
+static float g_px, g_py, g_pa;       // last judged centroid / angle
+// one-finger drag = left button held (selection box); the cursor follows the finger once pressed
+static int g_drag, drag_dirty;
+static float drag_tx, drag_ty;
+static uint32_t drag_release_ms;
 static int g_two_mode;             // two fingers: 0 undecided, 1 pinch (zoom), 2 sideways (rotate)
 static int g_two_dirty;
 // zoom steps: a short press of = or - per step; steps in the same direction extend it
@@ -298,21 +312,59 @@ static float dist2(void) { float dx = fing[1].x - fing[0].x, dy = fing[1].y - fi
 static void two_finger_tick(void) {
     if (!g_two_dirty || gesture != G_TWO || nfing != 2) return;
     g_two_dirty = 0;
-    float d = dist2(), cdx = (fing[0].x + fing[1].x) / 2 - g_cx0;
-    float spread = SDL_fabsf(d - g_d0);
-    if (!g_two_mode) {
-        if (spread > g_d0 * (PINCH_STEP - 1) && spread > SDL_fabsf(cdx)) g_two_mode = 1;
-        else if (SDL_fabsf(cdx) > JOY_DEAD && SDL_fabsf(cdx) > spread) g_two_mode = 2;
+    float d = dist2();
+    float cdx = (fing[0].x + fing[1].x) / 2 - g_cx0, cdy = (fing[0].y + fing[1].y) / 2 - g_cy0;
+    float da = SDL_atan2f(fing[1].y - fing[0].y, fing[1].x - fing[0].x) - g_a0;
+    while (da > SDL_PI_F) da -= 2 * SDL_PI_F;
+    while (da < -SDL_PI_F) da += 2 * SDL_PI_F;
+    float spread = SDL_fabsf(d - g_d0), pan = SDL_sqrtf(cdx * cdx + cdy * cdy);
+    if (!g_two_mode) {   // the first clear movement decides, and stays until the fingers lift
+        if (spread > g_d0 * (PINCH_STEP - 1) && spread > pan) g_two_mode = 1;
+        else if (SDL_fabsf(da) > TWIST_DEAD) g_two_mode = 3;
+        else if (pan > JOY_DEAD) g_two_mode = 2;
     }
     if (g_two_mode == 1) {
         // one zoom step per PINCH_STEP of spread; the base moves by whole steps so nothing is lost
         g_moved = 1;
         while (d > g_d0 * PINCH_STEP) { zoom_step(1); g_d0 *= PINCH_STEP; }
         while (d < g_d0 / PINCH_STEP) { zoom_step(0); g_d0 /= PINCH_STEP; }
-    } else if (g_two_mode == 2) {
+    } else if (g_two_mode == 2 || g_two_mode == 3) {
         g_moved = 1;
-        set_held(cdx < -JOY_DEAD ? HK_LEFT : cdx > JOY_DEAD ? HK_RIGHT : 0);
+        uint32_t t = now_ms();
+        float cx = (fing[0].x + fing[1].x) / 2, cy = (fing[0].y + fing[1].y) / 2;
+        float a = SDL_atan2f(fing[1].y - fing[0].y, fing[1].x - fing[0].x);
+        #define EXTEND(k, ms) pan_until[k] = (pan_until[k] > t ? pan_until[k] : t) + (ms)
+        if (g_two_mode == 2) {
+            // grab: fingers down -> the ground comes towards you (scroll forwards); fingers right ->
+            // the ground moves right (camera strafes left)
+            while (cy - g_py > PAN_STEP) { EXTEND(0, PAN_PULSE_MS); g_py += PAN_STEP; }
+            while (g_py - cy > PAN_STEP) { EXTEND(1, PAN_PULSE_MS); g_py -= PAN_STEP; }
+            while (cx - g_px > PAN_STEP) { EXTEND(2, PAN_PULSE_MS); g_px += PAN_STEP; }
+            while (g_px - cx > PAN_STEP) { EXTEND(3, PAN_PULSE_MS); g_px -= PAN_STEP; }
+        } else {
+            float d = a - g_pa;
+            while (d > SDL_PI_F) d -= 2 * SDL_PI_F;
+            while (d < -SDL_PI_F) d += 2 * SDL_PI_F;
+            while (d > TWIST_STEP) { EXTEND(2, TWIST_PULSE_MS); g_pa += TWIST_STEP; d -= TWIST_STEP; }
+            while (d < -TWIST_STEP) { EXTEND(3, TWIST_PULSE_MS); g_pa -= TWIST_STEP; d += TWIST_STEP; }
+        }
+        #undef EXTEND
     }
+}
+
+// keys for grab panning/turning, from the pulse timers (called every tick)
+static void pan_keys_tick(void) {
+    if (gesture != G_TWO || (g_two_mode != 2 && g_two_mode != 3)) {
+        for (int k = 0; k < 4; k++) pan_until[k] = 0;
+        return;
+    }
+    uint32_t t = now_ms();
+    unsigned want = 0;
+    if ((int32_t)(pan_until[0] - t) > 0) want |= HK_UP;
+    else if ((int32_t)(pan_until[1] - t) > 0) want |= HK_DOWN;
+    int l = (int32_t)(pan_until[2] - t) > 0, r = (int32_t)(pan_until[3] - t) > 0;
+    if (l != r) want |= (l ? HK_LEFT : HK_RIGHT) | (g_two_mode == 2 ? HK_CTRL : 0);
+    set_held(want);
 }
 
 static void on_finger(const SDL_Event *e) {
@@ -342,12 +394,14 @@ static void on_finger(const SDL_Event *e) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
             gesture = G_ONE; g_moved = g_long = 0; g_t0 = now_ms();
             float gx, gy; win_to_game(x, y, &gx, &gy); cursor_to(gx, gy);   // cursor follows the finger (tooltips)
-        } else if (nfing == 1 && gesture == G_ONE) {
+        } else if (nfing == 1 && gesture == G_ONE && !g_drag) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
             set_held(0);
             gesture = G_TWO; g_moved = 0; g_two_mode = 0; g_two_dirty = 0; g_t0 = now_ms();
             g_d0 = dist2(); if (g_d0 < 1) g_d0 = 1;
             g_cx0 = (fing[0].x + fing[1].x) / 2; g_cy0 = (fing[0].y + fing[1].y) / 2;
+            g_a0 = SDL_atan2f(fing[1].y - fing[0].y, fing[1].x - fing[0].x);
+            g_px = g_cx0; g_py = g_cy0; g_pa = g_a0;
         } else if (nfing < 2) fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
         return;
     }
@@ -362,13 +416,13 @@ static void on_finger(const SDL_Event *e) {
         f->x = x; f->y = y;
         if (gesture == G_ONE && !g_long) {
             float dx = f->x - f->x0, dy = f->y - f->y0;
-            if (!g_moved && dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) g_moved = 1;
-            if (g_moved) {
-                unsigned want = 0;
-                if (dy < -JOY_DEAD) want |= HK_UP; else if (dy > JOY_DEAD) want |= HK_DOWN;
-                if (dx < -JOY_DEAD) want |= HK_CTRL | HK_LEFT; else if (dx > JOY_DEAD) want |= HK_CTRL | HK_RIGHT;
-                set_held(want);
+            if (!g_moved && dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
+                // drag: press the left button where the finger landed (the cursor is already there)
+                g_moved = 1; g_drag = 1; drag_release_ms = 0;
+                if (up_pending[0]) mouse_button(0, 0);
+                press_pending = 0; release_after = 0;
             }
+            if (g_drag) { win_to_game(f->x, f->y, &drag_tx, &drag_ty); drag_dirty = 1; }
         } else if (gesture == G_TWO && nfing == 2) {
             g_two_dirty = 1;   // judged once per frame in two_finger_tick, after both fingers updated
         }
@@ -380,7 +434,15 @@ static void on_finger(const SDL_Event *e) {
     switch (gesture) {
     case G_ONE:
         set_held(0);
-        if (!cancelled && !g_moved && !g_long) click(0);
+        if (g_drag) {
+            g_drag = 0;
+            if (press_pending >= 0) release_after = 1;   // lifted before the press went out
+            else {
+                // final position in its own input batch, then release over it
+                if (drag_dirty && di_mouse_btn[0]) { cursor_to(drag_tx, drag_ty); drag_dirty = 0; }
+                drag_release_ms = now_ms() + SETTLE_MS;
+            }
+        } else if (!cancelled && !g_moved && !g_long) click(0);
         gesture = G_NONE;
         break;
     case G_TWO:
@@ -507,6 +569,15 @@ static void touch_tick(void) {
         && !di_mouse_btn[0] && !di_mouse_btn[1] && !di_mouse_btn[2]) mods_release();
     if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; click(1); }
     two_finger_tick();
+    pan_keys_tick();
+    // drag: follow the finger once the press is out (each move in its own input batch)
+    if (g_drag && drag_dirty && di_mouse_btn[0] && !home_phase && t - down_ms[0] >= SETTLE_MS) {
+        cursor_to(drag_tx, drag_ty); drag_dirty = 0;
+    }
+    if (drag_release_ms && (int32_t)(t - drag_release_ms) >= 0) {
+        drag_release_ms = 0;
+        if (di_mouse_btn[0]) mouse_button(0, 0);
+    }
     if (zoom_key && (int32_t)(t - zoom_until) >= 0) { send_key(zoom_key, 0); zoom_key = 0; }
     if (btn_down >= 0 && !btn_key_held && t - btn_down_ms >= 80) btn_release();
     edge_tick(t);
