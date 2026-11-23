@@ -8,6 +8,9 @@
 #include <errno.h>
 #include <ctype.h>
 #include <glob.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 
 char g_root[1024];
 char g_save[1024];
@@ -306,6 +309,11 @@ static const RegVal regvals[] = {
     {"InstallPath", 1, "C:\\Populous", 0},
     {"InstallDirectory", 1, "\\Populous", 0},
     {"CDDrive", 1, "C:", 0},
+#if TARGET_OS_IPHONE
+    // the 3D game draws at this rate (game logic keeps its own 60 Hz); its default is 40. 30 saves a quarter
+    // of the per-frame work on phones
+    {"DrawFrameRateLimit", 4, NULL, 30},
+#endif
 };
 SHIM(RegOpenKeyExA, 5) { LOG("RegOpenKeyExA(%s)", ARG(1) ? gstr(ARG(1)) : ""); wr32(ARG(4), 0x2001); return 0; }
 SHIM(RegOpenKeyA, 3) { LOG("RegOpenKeyA(%s)", ARG(1) ? gstr(ARG(1)) : ""); wr32(ARG(2), 0x2001); return 0; }

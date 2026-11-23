@@ -115,19 +115,31 @@ is skipped while the scripted camera runs (`0x969bd7` bit 0: flybys, tutorial). 
 
 ## Power use
 The game paces its frames by polling `GetTickCount` until a deadline (D3D: logic at 60 fps, drawing at
-`DrawFrameRateLimit`, 40 fps). These measures keep the phone cool:
+`DrawFrameRateLimit`). These measures keep the phone cool:
 - **Frame waits sleep.** `poll_time` in `runtime/k32.c` sleeps to the next millisecond, with the GIL released,
   when the same call site polls again within a millisecond. This replaced a core spinning at 100%; the game
   speed is unchanged.
 - **Guest waits sleep.** Waits (events, threads, semaphores, critical sections) sleep on a signal counter
-  (`wait_seq`) instead of polling every 2 ms.
+  (`wait_seq`) instead of polling every 2 ms. The waveOut notify thread waits on the mixer mutex instead of
+  polling every 5 ms.
+- **Fewer clock reads.** `gil_yield` reads the clock on every 16th call only.
 - **Indirect calls use a cache.** A direct-mapped cache sits in front of the function-table lookup in
   `dispatch` (`runtime/cpu.c`).
-- **The 3D scene renders at 2× on iOS.** It renders at 1280×960 instead of up to 4× (`pick_scale` in
-  `runtime/gpu.c`); `POPTB_D3D_SCALE` overrides this.
+- **Lower drawing load on iOS:**
+  - The 3D scene renders at 2× (1280×960) instead of up to 4× (`pick_scale` in `runtime/gpu.c`);
+    `POPTB_D3D_SCALE` overrides this.
+  - Drawing runs at 30 fps instead of the game's default 40, through a `DrawFrameRateLimit` registry value in
+    `runtime/fileio.c`. Game logic stays at 60.
+- **A cheaper overlay pass.** The 2D overlay over the 3D scene is built in one pass: compare with the 3D frame,
+  then convert (`plat_present_hybrid`). Only the rectangle that changed since the last frame is uploaded.
+- **The game pauses when the app isn't in front** (Control Center, a call, the app switcher, Home).
+  - An SDL event watch (`app_watch`) sees the lifecycle events. The main thread then sleeps in the run loop
+    (`app_pause`) and audio is paused.
+  - The time away is left out of the game's clock (`clock_add_pause`), so the game doesn't fast-forward.
+  - In the simulator, CPU while paused is about 1.5%.
 - **The audio watchdog checks less often** while the device is healthy (every 125 ms).
 
-On an iPhone Duo (Time Profiler, intro/menu), app CPU dropped from about 100% of a core to about 30%.
+On an iPhone Duo (Time Profiler, intro/menu), app CPU dropped from about 100% of a core to about 24%.
 Not done yet:
 - each changed texture still gets its own GPU texture and command buffer (`gpu.c`);
 - each 3D frame is still read back to the CPU for compositing.

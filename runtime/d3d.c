@@ -120,15 +120,9 @@ COMFN(dev_EndScene, 0) {
 
 int d3d_present(const Surf *s) {
     if (!shadow || s->mem != shadow_mem || s->w != shadow_w || s->h != shadow_h) return 0;
-    static uint8_t *mask;
-    static size_t mask_n;
-    size_t n = (size_t)s->w * s->h;
-    if (mask_n < n) { free(mask); mask = malloc(n); mask_n = n; }
-    for (int y = 0; y < s->h; y++) {
-        const uint16_t *g = (const uint16_t *)PTR(s->mem + y * s->pitch), *r = shadow + (size_t)y * s->w;
-        for (int x = 0; x < s->w; x++) mask[(size_t)y * s->w + x] = g[x] != r[x];
-    }
-    plat_present_hybrid((const uint16_t *)PTR(s->mem), s->w, s->h, s->pitch, mask);
+    // what the game drew over the 3D frame (pixels differing from the shadow copy) becomes the overlay;
+    // the comparison is done in the same pass as the colour conversion
+    plat_present_hybrid((const uint16_t *)PTR(s->mem), s->w, s->h, s->pitch, shadow);
     return 1;
 }
 COMFN(dev_GetRenderState, 2) { wr32(ARG(2), dev->rs[ARG(1) & 255]); return 0; }

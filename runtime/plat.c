@@ -5,6 +5,9 @@
 #include <SDL3/SDL.h>
 #include <pthread.h>
 #include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 
 static SDL_Window *win;
 static SDL_Renderer *ren;
@@ -13,6 +16,8 @@ static SDL_Texture *overlay, *hires;   // hybrid present: CPU pixels over the GP
 static SDL_GPUTexture *hires_src;
 static int tex_w = 640, tex_h = 480;
 static uint32_t *rgba;
+static uint32_t *ov_rgba;      // hybrid overlay (2D drawn over the 3D scene), as last uploaded
+static int ov_fresh;           // the overlay texture or buffer is new: upload all of it
 int g_mouse_x = 320, g_mouse_y = 240;
 uint32_t g_start_ms;
 static float vx = 320, vy = 240;   // virtual cursor in game coordinates (the game draws its own)
@@ -353,6 +358,7 @@ void plat_init(void) {
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS)) rt_fatal("SDL_Init: %s", SDL_GetError());
 #if TARGET_OS_IPHONE
+    { bool app_watch(void *, SDL_Event *); SDL_AddEventWatch(app_watch, NULL); }   // pause while not in front (app_pause)
     win = SDL_CreateWindow("Populous: The Beginning", 0, 0, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 #else
     win = SDL_CreateWindow("Populous: The Beginning", 1280, 960, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -385,6 +391,7 @@ static void set_size(int w, int h) {
     tex = overlay = NULL;
     set_logical(w, h);
     free(rgba); rgba = malloc((size_t)w * h * 4);
+    free(ov_rgba); ov_rgba = malloc((size_t)w * h * 4); ov_fresh = 1;
     tex_w = w; tex_h = h;
 }
 static SDL_Texture *stream_tex(SDL_Texture **t, SDL_PixelFormat fmt, SDL_BlendMode blend) {
@@ -448,7 +455,7 @@ void plat_present(const uint8_t *pix, int w, int h, int pitch, const uint32_t *p
     finish_frame(w, h);
 }
 
-void plat_present_hybrid(const uint16_t *pix, int w, int h, int pitch, const uint8_t *mask) {
+void plat_present_hybrid(const uint16_t *pix, int w, int h, int pitch, const uint16_t *under) {
 #if TARGET_OS_IPHONE
     if (frame_held()) return;
 #endif
@@ -471,14 +478,32 @@ void plat_present_hybrid(const uint16_t *pix, int w, int h, int pitch, const uin
             else { SDL_SetTextureScaleMode(hires, SDL_SCALEMODE_LINEAR); SDL_SetTextureBlendMode(hires, SDL_BLENDMODE_NONE); }
         }
     }
+    // One pass: pixels the game drew over the 3D frame are opaque, the rest fully transparent (0). Only
+    // the rectangle that changed since the last frame is uploaded; the HUD is mostly the same each frame.
+    if (!overlay) ov_fresh = 1;
+    SDL_Texture *t = stream_tex(&overlay, SDL_PIXELFORMAT_ARGB8888, SDL_BLENDMODE_BLEND);
+    int x0 = w, x1 = -1, y0 = h, y1 = -1;
     for (int y = 0; y < h; y++) {
         const uint16_t *s = (const uint16_t *)((const uint8_t *)pix + (size_t)y * pitch);
-        const uint8_t *m = mask + (size_t)y * w;
-        uint32_t *d = rgba + (size_t)y * w;
-        for (int x = 0; x < w; x++) d[x] = rgb565_to_xrgb(s[x]) | (m[x] ? 0xff000000u : 0);
+        const uint16_t *u = under + (size_t)y * w;
+        uint32_t *d = ov_rgba + (size_t)y * w;
+        int rx0 = w, rx1 = -1;
+        for (int x = 0; x < w; x++) {
+            uint32_t v = s[x] != u[x] ? rgb565_to_xrgb(s[x]) | 0xff000000u : 0;
+            if (v != d[x] || ov_fresh) { d[x] = v; if (x < rx0) rx0 = x; rx1 = x; }
+        }
+        if (rx1 >= 0) {
+            if (rx0 < x0) x0 = rx0;
+            if (rx1 > x1) x1 = rx1;
+            if (y < y0) y0 = y;
+            y1 = y;
+        }
     }
-    SDL_Texture *t = stream_tex(&overlay, SDL_PIXELFORMAT_ARGB8888, SDL_BLENDMODE_BLEND);
-    SDL_UpdateTexture(t, NULL, rgba, w * 4);
+    ov_fresh = 0;
+    if (y1 >= 0) {
+        SDL_Rect r = {x0, y0, x1 - x0 + 1, y1 - y0 + 1};
+        SDL_UpdateTexture(t, &r, ov_rgba + (size_t)y0 * w + x0, w * 4);
+    }
     SDL_RenderClear(ren);
     layout_game();
     if (hires) SDL_RenderTexture(ren, hires, NULL, GAME_DST);
@@ -575,6 +600,32 @@ void plat_frame_hook(CPU *R, int site) { touch_frame_hook(R, site); }
 void plat_frame_hook(CPU *R, int site) { (void)R; (void)site; }
 #endif
 
+#if TARGET_OS_IPHONE
+// The app is no longer in front (Control Center, a call, the app switcher, home): stop the whole game until
+// it is. The main thread waits here without the GIL, audio is paused, and the time away is left out of
+// the game's clock so it doesn't fast-forward afterwards. No game logic, rendering or GPU work meanwhile.
+// SDL doesn't queue app lifecycle events: they only reach event watches, as they happen.
+static volatile int app_inactive;
+bool app_watch(void *user, SDL_Event *e) {
+    (void)user;
+    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) app_inactive = 1;
+    else if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) app_inactive = 0;
+    return true;
+}
+static void app_pause(void) {
+    void dsound_set_paused(int); void clock_add_pause(uint64_t); uint64_t clock_raw_ms(void);
+    uint64_t t0 = clock_raw_ms();
+    dsound_set_paused(1);
+    gil_unlock();
+    // sleep in the main run loop until iOS brings the app back (app_watch clears the flag from there);
+    // SDL's own wait would keep waking up to poll
+    while (app_inactive) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, true);
+    gil_lock();
+    clock_add_pause(clock_raw_ms() - t0);
+    dsound_set_paused(0);
+}
+#endif
+
 void plat_pump(void) {
     SDL_Event e;
     if (!pthread_main_np()) return;   // Cocoa only accepts events on the main thread
@@ -588,6 +639,9 @@ void plat_pump(void) {
 #endif
     for (int b = 0; b < 3; b++)
         if (up_pending[b] && now_ms() - down_ms[b] >= MIN_CLICK_MS) mouse_button(b, 0);
+#if TARGET_OS_IPHONE
+    if (app_inactive) app_pause();
+#endif
     while (SDL_PollEvent(&e)) {
 #if TARGET_OS_IPHONE
         if (touch_event(&e)) continue;
@@ -596,6 +650,7 @@ void plat_pump(void) {
         case SDL_EVENT_QUIT:
             msgq_post(g_hwnd, 0x10, 0, 0);   // WM_CLOSE
             break;
+
         case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: {
             int down = e.type == SDL_EVENT_KEY_DOWN;
             // Cmd+Q / Cmd+Enter: Mac shortcuts

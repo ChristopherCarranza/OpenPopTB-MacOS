@@ -118,17 +118,12 @@ static void wave_mix(float *mix, int frames) {
 static void *wave_notify_main(void *arg) {
     (void)arg;
     CPU *R = NULL;
-    static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
     for (;;) {
-        pthread_mutex_lock(&m);
-        while (done_h == done_t) {
-            struct timespec ts = {0, 0};
-            struct timeval tv; gettimeofday(&tv, NULL);
-            ts.tv_sec = tv.tv_sec; ts.tv_nsec = tv.tv_usec * 1000 + 5000000;
-            if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
-            pthread_cond_timedwait(&done_cv, &m, &ts);
-        }
-        pthread_mutex_unlock(&m);
+        // the done queue only grows under mix_mu (mixer, waveOutReset): waiting on that mutex can't miss a
+        // signal, so no polling is needed
+        pthread_mutex_lock(&mix_mu);
+        while (done_h == done_t) pthread_cond_wait(&done_cv, &mix_mu);
+        pthread_mutex_unlock(&mix_mu);
         gil_lock();
         if (!R) R = cpu_new_thread();
         while (done_h != done_t) {
@@ -187,12 +182,19 @@ static void mix_frames(float *mix, int frames) {
 static uint32_t last_adv_ms;      // last time the mixer advanced (device or watchdog), under mix_mu
 static uint32_t last_dev_ms;      // last time the device asked for audio
 static volatile int dbg_stall;    // debug: ignore the device (simulates a stalled audio device)
+static volatile int app_paused;   // the app is not in front (plat.c app_pause): no audio at all
+void dsound_set_paused(int on) {
+    app_paused = on;
+    if (stream) { if (on) SDL_PauseAudioStreamDevice(stream); else SDL_ResumeAudioStreamDevice(stream); }
+    pthread_mutex_lock(&mix_mu); last_adv_ms = last_dev_ms = now_ms(); pthread_mutex_unlock(&mix_mu);
+}
 static void *audio_watchdog(void *arg) {
     (void)arg;
     float *mix = NULL; int cap = 0;
     int stalled = 0;
     for (;;) {
         usleep(stalled ? 20000 : STALL_MS * 1000 / 2);   // while healthy, a check twice per stall period is enough
+        if (app_paused) { stalled = 0; continue; }       // paused on purpose: nothing to keep moving
         pthread_mutex_lock(&mix_mu);
         uint32_t t = now_ms();
         stalled = t - last_dev_ms >= STALL_MS;

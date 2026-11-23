@@ -234,6 +234,8 @@ void gil_yield(void) {
         mach_timebase_info_data_t tb; mach_timebase_info(&tb);
         gil_quantum = 2000000ull * tb.denom / tb.numer;   // 2 ms
     }
+    static __thread unsigned n;
+    if (++n & 15) return;   // read the clock every 16th call only (this runs on loop back-edges)
     if (mach_absolute_time() - gil_t0 < gil_quantum) return;
     gil_unlock();
     gil_lock();

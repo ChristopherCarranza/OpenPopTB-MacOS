@@ -390,9 +390,16 @@ SHIM(SetStdHandle, 2) { return 1; }
 SHIM(GetFileType, 1) { return ARG(0) >= 0xf000 ? 2 : 1; }
 
 // ---------------- time ----------------
-uint32_t now_ms(void) {
+// Game time leaves out time spent paused (app not in front, plat.c app_pause), so the game doesn't try to
+// catch up afterwards. Whole milliseconds, so millisecond boundaries stay those of the real clock.
+static uint64_t paused_ms;
+void clock_add_pause(uint64_t ms) { paused_ms += ms; }
+uint64_t clock_raw_ms(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint32_t)(ts.tv_sec * 1000ull + ts.tv_nsec / 1000000);
+    return ts.tv_sec * 1000ull + ts.tv_nsec / 1000000;
+}
+uint32_t now_ms(void) {
+    return (uint32_t)(clock_raw_ms() - paused_ms);
 }
 // The game paces its frames by polling GetTickCount (or timeGetTime) in a tight loop until a deadline
 // (D3DPopTB f_4a4450, popTB f_4ba520). A call from the same place in the same millisecond as that place's
@@ -415,7 +422,7 @@ uint32_t poll_time(CPU *R) {
 SHIM(GetTickCount, 0) { return poll_time(R); }
 SHIM(QueryPerformanceCounter, 1) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    wr64(ARG(0), ts.tv_sec * 1000000ull + ts.tv_nsec / 1000);
+    wr64(ARG(0), ts.tv_sec * 1000000ull + ts.tv_nsec / 1000 - paused_ms * 1000);
     return 1;
 }
 SHIM(QueryPerformanceFrequency, 1) { wr64(ARG(0), 1000000); return 1; }
