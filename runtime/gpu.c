@@ -2,6 +2,9 @@
 // list of draw commands, each with a cached pipeline), then rendered and read back in one go at gpu_end_scene.
 #include "gpu.h"
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -304,10 +307,18 @@ static SDL_GPUTexture *make_tex(int w, int h, SDL_GPUTextureFormat fmt, SDL_GPUT
 }
 
 static int pick_scale(int h) {
-    const char *e = getenv("POPTB_D3D_SCALE");
+    static const char *e; static int got;
+    if (!got) { e = getenv("POPTB_D3D_SCALE"); got = 1; }
     int s;
     if (e && *e) s = atoi(e);
-    else { int ph = h; plat_gpu_device(&ph); s = (ph + h / 2) / h; }
+    else {
+        int ph = h; plat_gpu_device(&ph); s = (ph + h / 2) / h;
+#if TARGET_OS_IPHONE
+        // phones: 2x (1280x960 for 640x480) is still sharper than the original and a quarter of the pixels
+        // of 4x; each frame is also read back and composited, so this saves GPU, memory and CPU time (heat)
+        if (s > 2) s = 2;
+#endif
+    }
     return s < 1 ? 1 : s > 4 ? 4 : s;
 }
 
@@ -337,7 +348,9 @@ void gpu_begin_scene(int w, int h, const uint16_t *src, int pitch) {
     nverts = nidx = ncmds = 0;
     in_scene = 1;
     if (dumpf) { fclose(dumpf); dumpf = NULL; }
-    const char *dump = dumped ? NULL : getenv("POPTB_D3D_DUMP"), *ms = getenv("POPTB_D3D_DUMP_MS");
+    static const char *dump_env, *ms; static int env_read;
+    if (!env_read) { dump_env = getenv("POPTB_D3D_DUMP"); ms = getenv("POPTB_D3D_DUMP_MS"); env_read = 1; }
+    const char *dump = dumped ? NULL : dump_env;
     if (dump && SDL_GetTicks() >= (Uint64)(ms ? atoi(ms) : 0)) { dumped = 1; dumpf = fopen(dump, "w"); }
 }
 

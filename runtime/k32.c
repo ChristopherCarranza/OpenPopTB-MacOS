@@ -38,8 +38,31 @@ void handle_close(uint32_t h) {
     if (x->type == H_THREAD && !x->done) return;   // thread still alive: keep it
     x->type = H_NONE;
 }
+// Every change that can end a wait (event set, thread exit, semaphore/mutex/critical section release)
+// bumps wait_seq under wait_mu. A waiter reads wait_seq before checking its handles and then sleeps until
+// it changes, so a signal between the check and the sleep is never lost and no polling is needed.
+static uint64_t wait_seq;
+static uint64_t wait_seq_now(void) {
+    pthread_mutex_lock(&wait_mu);
+    uint64_t s = wait_seq;
+    pthread_mutex_unlock(&wait_mu);
+    return s;
+}
+// release the GIL and sleep until something is signalled (wait_seq moves on from seq) or max_ms pass
+static void wait_change(uint64_t seq, uint32_t max_ms) {
+    gil_unlock();
+    pthread_mutex_lock(&wait_mu);
+    struct timeval tv; gettimeofday(&tv, NULL);
+    uint64_t ns = (uint64_t)tv.tv_usec * 1000 + (uint64_t)max_ms * 1000000;
+    struct timespec ts = {tv.tv_sec + (time_t)(ns / 1000000000), (long)(ns % 1000000000)};
+    while (wait_seq == seq)
+        if (pthread_cond_timedwait(&wait_cv, &wait_mu, &ts)) break;   // timed out
+    pthread_mutex_unlock(&wait_mu);
+    gil_lock();
+}
 void handles_signal(void) {
     pthread_mutex_lock(&wait_mu);
+    wait_seq++;
     pthread_cond_broadcast(&wait_cv);
     pthread_mutex_unlock(&wait_mu);
 }
@@ -161,9 +184,10 @@ SHIM(DeleteCriticalSection, 1) { return 0; }
 SHIM(EnterCriticalSection, 1) {
     uint32_t cs = ARG(0), me = nthread(R)->tid;
     for (;;) {
+        uint64_t seq = wait_seq_now();
         uint32_t owner = rd32(cs + 12);
         if (owner == 0 || owner == me) break;
-        gil_unlock(); sched_yield(); usleep(100); gil_lock();
+        wait_change(seq, 100);   // LeaveCriticalSection signals; the timeout is only a safety net
     }
     wr32(cs + 12, me);
     wr32(cs + 8, rd32(cs + 8) + 1);
@@ -174,7 +198,7 @@ SHIM(LeaveCriticalSection, 1) {
     uint32_t n = rd32(cs + 8);
     if (n) n--;
     wr32(cs + 8, n);
-    if (!n) wr32(cs + 12, 0);
+    if (!n) { wr32(cs + 12, 0); handles_signal(); }
     return 0;
 }
 SHIM(InterlockedIncrement, 1) { uint32_t v = rd32(ARG(0)) + 1; wr32(ARG(0), v); return v; }
@@ -227,6 +251,7 @@ static int try_acquire(CPU *R, uint32_t h) {
 static uint32_t wait_objs(CPU *R, uint32_t n, uint32_t harr, int all, uint32_t ms) {
     uint32_t t0 = now_ms();
     for (;;) {
+        uint64_t seq = wait_seq_now();   // before the check: a signal after it wakes the sleep below
         if (all) {
             int ok = 1;
             for (uint32_t i = 0; i < n; i++) { Handle *x = handle_get(rd32(harr + 4 * i)); if (x && x->type == H_EVENT && !x->signaled) ok = 0; if (x && x->type == H_THREAD && !x->done) ok = 0; if (x && x->type == H_SEM && x->count <= 0) ok = 0; }
@@ -234,15 +259,13 @@ static uint32_t wait_objs(CPU *R, uint32_t n, uint32_t harr, int all, uint32_t m
         } else {
             for (uint32_t i = 0; i < n; i++) if (try_acquire(R, rd32(harr + 4 * i))) return i;
         }
-        if (ms != 0xffffffff && now_ms() - t0 >= ms) return 0x102;  // WAIT_TIMEOUT
-        gil_unlock();
-        pthread_mutex_lock(&wait_mu);
-        struct timeval tv; gettimeofday(&tv, NULL);
-        struct timespec ts = {tv.tv_sec, tv.tv_usec * 1000 + 2000000};
-        if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
-        pthread_cond_timedwait(&wait_cv, &wait_mu, &ts);
-        pthread_mutex_unlock(&wait_mu);
-        gil_lock();
+        uint32_t left = 250;   // re-check at least this often (safety net)
+        if (ms != 0xffffffff) {
+            uint32_t el = now_ms() - t0;
+            if (el >= ms) return 0x102;  // WAIT_TIMEOUT
+            if (ms - el < left) left = ms - el;
+        }
+        wait_change(seq, left);
     }
 }
 SHIM(WaitForSingleObject, 2) {
@@ -371,7 +394,25 @@ uint32_t now_ms(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000ull + ts.tv_nsec / 1000000);
 }
-SHIM(GetTickCount, 0) { gil_yield(); return now_ms(); }
+// The game paces its frames by polling GetTickCount (or timeGetTime) in a tight loop until a deadline
+// (D3DPopTB f_4a4450, popTB f_4ba520). A call from the same place in the same millisecond as that place's
+// previous call is such a loop: sleep, without the GIL, to the next millisecond instead of spinning a core.
+// Other callers get the time at once. Timing stays exact to the millisecond.
+uint32_t poll_time(CPU *R) {
+    static __thread uint32_t last_site, last_ms;
+    uint32_t site = rd32(R->esp), t = now_ms();
+    if (site == last_site && t == last_ms) {
+        struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+        struct timespec d = {0, 1000000 - now.tv_nsec % 1000000 + 20000};   // just past the next ms
+        gil_unlock();
+        nanosleep(&d, NULL);
+        gil_lock();
+        t = now_ms();
+    } else gil_yield();
+    last_site = site; last_ms = t;
+    return t;
+}
+SHIM(GetTickCount, 0) { return poll_time(R); }
 SHIM(QueryPerformanceCounter, 1) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     wr64(ARG(0), ts.tv_sec * 1000000ull + ts.tv_nsec / 1000);

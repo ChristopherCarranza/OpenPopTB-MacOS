@@ -579,7 +579,9 @@ void plat_pump(void) {
     SDL_Event e;
     if (!pthread_main_np()) return;   // Cocoa only accepts events on the main thread
     if (nscript) script_tick();
-    if (getenv("POPTB_DEBUG_CMDS")) debug_cmds();
+    static int dbg_cmds = -1;
+    if (dbg_cmds < 0) dbg_cmds = getenv("POPTB_DEBUG_CMDS") != NULL;
+    if (dbg_cmds) debug_cmds();
     if (g_hold_sc && (int32_t)(now_ms() - g_hold_until) >= 0) { send_key(g_hold_sc, 0); g_hold_sc = 0; }
 #if TARGET_OS_IPHONE
     touch_tick();

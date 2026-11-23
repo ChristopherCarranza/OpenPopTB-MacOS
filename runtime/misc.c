@@ -38,7 +38,7 @@ SHIM(timeKillEvent, 1) {
     if (i < 64 && timers[i]) { timers[i]->dead = 1; timers[i] = NULL; }
     return 0;
 }
-SHIM(timeGetTime, 0) { gil_yield(); return now_ms(); }
+SHIM(timeGetTime, 0) { uint32_t poll_time(CPU *); return poll_time(R); }   // k32.c: sleeps in polling loops
 SHIM(timeGetSystemTime, 2) { return 0; }
 SHIM(timeBeginPeriod, 1) { return 0; }
 SHIM(timeEndPeriod, 1) { return 0; }

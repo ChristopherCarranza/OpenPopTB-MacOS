@@ -113,6 +113,25 @@ stops (`zweight`, measured from on-screen sizes), so doubling the spread roughly
 is skipped while the scripted camera runs (`0x969bd7` bit 0: flybys, tutorial). After each change
 `[0x89c6ec]` is set to the nearest stop so = / - carry on from there. Debug: `zoomu U` (U = 0..3).
 
+## Power use
+The game paces its frames by polling `GetTickCount` until a deadline (D3D: logic at 60 fps, drawing at
+`DrawFrameRateLimit`, 40 fps). These measures keep the phone cool:
+- **Frame waits sleep.** `poll_time` in `runtime/k32.c` sleeps to the next millisecond, with the GIL released,
+  when the same call site polls again within a millisecond. This replaced a core spinning at 100%; the game
+  speed is unchanged.
+- **Guest waits sleep.** Waits (events, threads, semaphores, critical sections) sleep on a signal counter
+  (`wait_seq`) instead of polling every 2 ms.
+- **Indirect calls use a cache.** A direct-mapped cache sits in front of the function-table lookup in
+  `dispatch` (`runtime/cpu.c`).
+- **The 3D scene renders at 2× on iOS.** It renders at 1280×960 instead of up to 4× (`pick_scale` in
+  `runtime/gpu.c`); `POPTB_D3D_SCALE` overrides this.
+- **The audio watchdog checks less often** while the device is healthy (every 125 ms).
+
+On an iPhone Duo (Time Profiler, intro/menu), app CPU dropped from about 100% of a core to about 30%.
+Not done yet:
+- each changed texture still gets its own GPU texture and command buffer (`gpu.c`);
+- each 3D frame is still read back to the CPU for compositing.
+
 ## Audio stalls
 Videos (and the intro) pace themselves on DirectSound play positions, which only move when the audio
 device asks for sound. If the device stops (phone call, Bluetooth/route change, audio server

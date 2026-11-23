@@ -76,6 +76,18 @@ static gfn fn_find(uint32_t a) {
     return NULL;
 }
 
+// Indirect calls are frequent (function pointers in inner drawing loops): a direct-mapped cache in front
+// of the binary search. Guest code runs one thread at a time (GIL), so no locking is needed.
+#define FN_CACHE 4096
+static struct { uint32_t a; gfn f; } fn_cache[FN_CACHE];
+static gfn fn_find_cached(uint32_t a) {
+    uint32_t h = (a ^ (a >> 13)) & (FN_CACHE - 1);
+    if (fn_cache[h].a == a && fn_cache[h].f) return fn_cache[h].f;
+    gfn f = fn_find(a);
+    if (f) { fn_cache[h].f = f; fn_cache[h].a = a; }
+    return f;
+}
+
 void dispatch(CPU *R, uint32_t t) {
     if (t >= GUEST_THUNK_BASE && t < GUEST_THUNK_BASE + GUEST_THUNK_MAX * 4) {
         uint32_t i = (t - GUEST_THUNK_BASE) / 4;
@@ -83,7 +95,7 @@ void dispatch(CPU *R, uint32_t t) {
         if (f) { f(R); return; }
         if (i < (uint32_t)nthunks) rt_fatal("unimplemented Win32 function: %s (ret=0x%08x)", thunk_names[i], rd32(R->esp));
     }
-    gfn g = fn_find(t);
+    gfn g = fn_find_cached(t);
     if (g) { g(R); return; }
     rt_fatal("dispatch: unknown target 0x%08x (ret=0x%08x esp=0x%08x)", t, rd32(R->esp), R->esp);
 }

@@ -190,11 +190,13 @@ static volatile int dbg_stall;    // debug: ignore the device (simulates a stall
 static void *audio_watchdog(void *arg) {
     (void)arg;
     float *mix = NULL; int cap = 0;
+    int stalled = 0;
     for (;;) {
-        usleep(20000);
+        usleep(stalled ? 20000 : STALL_MS * 1000 / 2);   // while healthy, a check twice per stall period is enough
         pthread_mutex_lock(&mix_mu);
         uint32_t t = now_ms();
-        if (t - last_dev_ms >= STALL_MS) {
+        stalled = t - last_dev_ms >= STALL_MS;
+        if (stalled) {
             uint32_t gap = t - last_adv_ms;   // real time since the mixer last moved
             if (gap > 1000) gap = 1000;       // after a long suspension don't fast-forward minutes of audio
             int frames = (int)((uint64_t)gap * OUT_RATE / 1000);
