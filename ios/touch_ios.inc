@@ -571,16 +571,20 @@ void touch_debug_watch(FILE *out, uint32_t a, int sz) {
     else if (w_n < 8) { w_addr[w_n] = a; w_sz[w_n] = sz == 4 || sz == 2 ? sz : 1; w_val[w_n] = w_rd(w_n); w_n++; }
     fprintf(out, "dbg watch %08x (%d)\n", a, w_n);
 }
-// The 3D game's selected-units count (the number drawn by the cursor; 0 = nothing selected). A light haptic
-// when the player's tap or box changes it to a non-zero value. Switching between two single units keeps it
-// at 1, so that one goes without.
+// The 3D game's selected-units count (the number drawn by the cursor; 0 = nothing selected) and the first
+// selected unit (its thing number sits in the upper half; it stays put when a tap on a hut or the ground gives
+// the selection a command). A haptic when the player's tap or box changes the count to a non-zero value, or
+// swaps one selected unit for another at the same count.
 #define SEL_COUNT 0x89daf9u
+#define SEL_FIRST 0x969e88u
 static void sel_tick(void) {
     static int last = -1;
+    static uint32_t last_id;
     if (!cam_direct() || !in_level()) { last = -1; return; }
     int n = rd8(SEL_COUNT);
-    if (last >= 0 && n != last && n > 0 && (int32_t)(now_ms() - sel_until) < 0) haptic("select");
-    last = n;
+    uint32_t id = rd32(SEL_FIRST);
+    if (last >= 0 && n > 0 && (n != last || id != last_id) && (int32_t)(now_ms() - sel_until) < 0) haptic("select");
+    last = n; last_id = id;
 }
 void touch_frame_hook(CPU *R, int site) {
     if (site >= 0 && site < 4) g_hook_n[site]++;
