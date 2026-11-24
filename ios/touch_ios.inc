@@ -805,6 +805,12 @@ static int touch_event(const SDL_Event *e) {
     return 0;
 }
 
+// The game's cursor is hidden while playing by touch or pencil, and shown while a real mouse or trackpad is
+// in use: only mouse input clears touch_owned (on_pointer; the relative-mode path with a mouse connected),
+// a touch sets it. Last input wins: a touch hides the cursor again, moving the mouse brings it back. (A
+// hardware keyboard alone doesn't bring it back.)
+static int touch_cursor_hidden(void) { return touch_owned; }
+
 // iOS keyboard: shown while the game has a text field open (save game names): D3DPopTB.exe keeps the
 // active field at 0xa6905c (0 when none). Its letters arrive as key presses plus text (WM_KEYDOWN +
 // WM_CHAR), like a desktop keyboard; Return confirms, as in the game.

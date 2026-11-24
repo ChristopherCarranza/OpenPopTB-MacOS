@@ -203,6 +203,8 @@ static void debug_cmds(void) {
             fprintf(out, "dbg stat: cursor moves %d, homings %d, cursor (%d,%d), zoom steps in %d out %d, edge moves %d, keys shift %d ctrl %d alt %d, mice %d relative %d\n",
                     g_touch_count, g_home_count, (int)vx, (int)vy, g_zoom_in, g_zoom_out, g_edge_moves,
                     di_keys[0x2A] != 0, di_keys[0x1D] != 0, di_keys[0x38] != 0, g_mice, (int)SDL_GetWindowRelativeMouseMode(win));
+            extern int g_cursor_blits, g_cursor_skipped;
+            fprintf(out, "dbg cursor hidden %d, cursor blits %d skipped %d\n", plat_cursor_hidden(), g_cursor_blits, g_cursor_skipped);
             extern int g_last_click_mods, g_drag_scroll_ms; extern int g_drag_resyncs; fprintf(out, "dbg last click mods %d, drag edge scroll %d ms, drag resyncs %d\n", g_last_click_mods, g_drag_scroll_ms, g_drag_resyncs);
         } else if (!strncmp(line, "zoomu ", 6)) {
             void touch_debug_zoom(FILE *, float); touch_debug_zoom(out, (float)atof(line + 6));
@@ -229,6 +231,14 @@ static void debug_cmds(void) {
                 else if (!strcmp(what, "up")) mouse_button(0, 0);
                 fprintf(out, "dbg mouse %s %.0f %.0f\n", what, mx, my);
             }
+        } else if (!strncmp(line, "pointer ", 8)) {
+            // pointer DX DY: a relative mouse movement event, as from a mouse connected to an iPad
+            float dx = 0, dy = 0; sscanf(line + 8, "%f %f", &dx, &dy);
+            SDL_Event ev; memset(&ev, 0, sizeof ev);
+            ev.type = SDL_EVENT_MOUSE_MOTION; ev.motion.which = 1; ev.motion.xrel = dx; ev.motion.yrel = dy;
+            ev.motion.windowID = SDL_GetWindowID(win);
+            SDL_PushEvent(&ev);
+            fprintf(out, "dbg pointer %.0f %.0f\n", dx, dy);
         } else if (!strncmp(line, "now", 3)) {
             fprintf(out, "dbg now game %u ms\n", now_ms());
         } else if (!strncmp(line, "touchlog", 8)) {
@@ -603,8 +613,10 @@ static void send_key(SDL_Scancode sc, int down) {
 #if TARGET_OS_IPHONE
 #include "../ios/touch_ios.inc"
 void plat_frame_hook(CPU *R, int site) { touch_frame_hook(R, site); }
+int plat_cursor_hidden(void) { return touch_cursor_hidden(); }
 #else
 void plat_frame_hook(CPU *R, int site) { (void)R; (void)site; }
+int plat_cursor_hidden(void) { return 0; }
 #endif
 
 #if TARGET_OS_IPHONE

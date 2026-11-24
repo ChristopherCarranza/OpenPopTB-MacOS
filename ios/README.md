@@ -64,6 +64,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | RIGHT CLICK, bottom left (left thumb) | tap: right click where the cursor is (deselects the selection; over a unit, panel icon or building it does what a right click there does: query, zoom to the shaman...) |
 | RIGHT CLICK held + one-finger drag | grab and move the world 1:1, like a two-finger drag (no selection box) |
 | RIGHT CLICK held + tap on the game | right click at that spot (query, or deselect on empty ground) |
+| Game cursor | hidden while you play by touch or pencil; shown while a real mouse or trackpad is used (iPad with a mouse). Last input wins: a touch hides it, moving the mouse brings it back. The 3D game BltFasts its 32x32 cursor surface (object at `0x5d5718`); `runtime/ddraw.c` skips those blits while hidden |
 | Text fields (save game names) | the iOS keyboard comes up while the game has a text field open (D3DPopTB.exe keeps it at `0xa6905c`) and goes away when it closes; the view slides up so the row being edited stays above the keyboard; Return saves, as in the game |
 | Apple Pencil | works exactly like a finger (tap, drag, RIGHT CLICK held + drag/tap); while it touches the game, other fingers on the game are ignored (palm) but the buttons still work; hovering moves the cursor where the hardware senses it |
 
@@ -166,7 +167,7 @@ of silence from the device, so nothing waits forever; the device takes over agai
 ## Debugging
 `POPTB_DEBUG_CMDS=1` makes the app read commands from `Documents/poptb_cmd.txt` twice a second and
 append results to `Documents/poptb_dbg.txt`: `find X Y T`, `filt X Y T`, `peek ADDR N`,
-`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `mouse down|up|move X Y` (raw left button, game pixels), `edge N`, `finger down|up|move ID X Y [pen]` (inject touches, window points; `pen` = as the Apple Pencil), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `zoomu U` (pinch-zoom position 0..3), `now` (game clock), `touchlog` (the last 160 touches and what they turned into: clicks, homings, gestures, camera), `dump NAME` (0x400000-0x1000000 to
+`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `mouse down|up|move X Y` (raw left button, game pixels), `edge N`, `finger down|up|move ID X Y [pen]` (inject touches, window points; `pen` = as the Apple Pencil), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `zoomu U` (pinch-zoom position 0..3), `now` (game clock), `pointer DX DY` (a relative mouse movement, as from an iPad mouse), `touchlog` (the last 160 touches and what they turned into: clicks, homings, gestures, camera), `dump NAME` (0x400000-0x1000000 to
 `Documents/dump_NAME.bin`, for diffing game state between screens), `stall 1|0` (ignore the audio
 device, to test the stall watchdog). The input script (`--script`) also takes
 `ttap:x,y` (touch tap in game coordinates).

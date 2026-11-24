@@ -324,9 +324,24 @@ COMFN(s_Blt, 5) {
     if (d->primary) { present_surf(d); plat_frame_hook(R, 2); }
     return 0;
 }
+// The 3D game draws its own cursor by BltFast-ing a 32x32 cursor image (the surface object it keeps at
+// 0x5d5718) onto the back buffer each frame and onto the front buffer when the mouse moves between frames.
+// While playing by touch the cursor is only clutter: those blits are skipped (plat_cursor_hidden). The
+// game's save/restore of the area under the cursor still runs and just copies the same pixels back.
+int g_cursor_blits, g_cursor_skipped;   // diagnostics (debug "stat")
+static int is_cursor_blit(uint32_t src) {
+    extern const char *g_exe_name;
+    static int d3d = -1;
+    if (d3d < 0) d3d = !strcasecmp(g_exe_name, "D3DPopTB.exe");
+    return d3d && src && src == rd32(0x5d5718u);
+}
 COMFN(s_BltFast, 5) {
     Surf *d = S(THIS);
     if (rt_verbose > 1) LOG("BltFast %x <- %x primary=%d", THIS, ARG(3), d->primary);
+    if (is_cursor_blit(ARG(3))) {
+        g_cursor_blits++;
+        if (plat_cursor_hidden()) { g_cursor_skipped++; return 0; }
+    }
     int x = (int)ARG(1), y = (int)ARG(2);
     Surf *s = S(ARG(3));
     int sx, sy, sw, sh; rect_of(ARG(4), s, &sx, &sy, &sw, &sh);
