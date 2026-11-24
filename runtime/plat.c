@@ -267,6 +267,10 @@ static void debug_cmds(void) {
             fprintf(out, "dbg gpureset\n");
         } else if (!strncmp(line, "now", 3)) {
             fprintf(out, "dbg now game %u ms\n", now_ms());
+        } else if (sscanf(line, "watch %x %u", &a, &v) >= 1) {
+#if TARGET_OS_IPHONE
+            void touch_debug_watch(FILE *, uint32_t, int); touch_debug_watch(out, a, (int)v);
+#endif
         } else if (!strncmp(line, "touchlog", 8)) {
 #if TARGET_OS_IPHONE
             void touch_debug_log(FILE *); touch_debug_log(out);

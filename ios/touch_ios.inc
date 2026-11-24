@@ -34,6 +34,10 @@
 static struct { uint32_t t; char s[72]; } tlog[TLOG_N];
 static int tlog_n, tlog_hover;
 static uint32_t tlog_cam(void) { return *(volatile uint32_t *)PTR(0x89d1ecu); }
+void ios_haptic(float intensity);   // ios/haptics_ios.m
+void ios_haptic_prepare(void);
+#define HAPTIC_STRENGTH 1.0f   // UIKit heavy impact, full strength (light 50% and medium 70% were too faint on the iPhone)
+
 static void tlogf(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     int i = tlog_n++ % TLOG_N;
@@ -42,6 +46,7 @@ static void tlogf(const char *fmt, ...) {
     vsnprintf(tlog[i].s, sizeof tlog[i].s, fmt, ap);
     va_end(ap);
 }
+static void haptic(const char *why) { tlogf("haptic %s", why); ios_haptic(HAPTIC_STRENGTH); }
 
 #define THUMB_STRIP 100      // points reserved left of the game picture for the button column (levels)
 #define LEFT_COLUMN 1        // the button column on the left (the game picture shrinks for it in levels)
@@ -147,7 +152,15 @@ static void cursor_to(float gx, float gy) {
 static int cursor_settled(void) { return !home_phase && now_ms() - settle_ms >= SETTLE_MS; }
 static uint32_t hide_until;
 static int frame_held(void) { return home_phase || (int32_t)(hide_until - now_ms()) > 0; }
-static void click(int b) { if (up_pending[b]) mouse_button(b, 0); click_pending = b; tlogf("click %d", b); }
+// a selection change shortly after the player's own tap or box gets a light haptic (sel_tick); changes at
+// other times (selected units dying in a fight) don't
+#define SEL_WINDOW_MS 800
+static uint32_t sel_until;
+static void click(int b) {
+    if (up_pending[b]) mouse_button(b, 0);
+    click_pending = b; tlogf("click %d", b);
+    if (b == 0) sel_until = now_ms() + SEL_WINDOW_MS;
+}
 
 // ---- held keys (scrolling, rotation, zoom) ----
 enum { HK_UP = 1, HK_DOWN = 2, HK_LEFT = 4, HK_RIGHT = 8, HK_CTRL = 16, HK_ZIN = 32, HK_ZOUT = 64 };   // zoom bits unused (zoom_step)
@@ -550,8 +563,32 @@ static void zoom_apply(CPU *R, float u) {
     g_zoom_applied++;
 }
 // called from the DirectDraw present paths (game thread, between frames)
+// debug "watch ADDR [1|2|4]": log changes of a guest value once per frame into the touch log; "watch 0" clears
+static uint32_t w_addr[8], w_val[8]; static int w_sz[8], w_n;
+static uint32_t w_rd(int i) { return w_sz[i] == 4 ? rd32(w_addr[i]) : w_sz[i] == 2 ? rd16(w_addr[i]) : rd8(w_addr[i]); }
+void touch_debug_watch(FILE *out, uint32_t a, int sz) {
+    if (!a) w_n = 0;
+    else if (w_n < 8) { w_addr[w_n] = a; w_sz[w_n] = sz == 4 || sz == 2 ? sz : 1; w_val[w_n] = w_rd(w_n); w_n++; }
+    fprintf(out, "dbg watch %08x (%d)\n", a, w_n);
+}
+// The 3D game's selected-units count (the number drawn by the cursor; 0 = nothing selected). A light haptic
+// when the player's tap or box changes it to a non-zero value. Switching between two single units keeps it
+// at 1, so that one goes without.
+#define SEL_COUNT 0x89daf9u
+static void sel_tick(void) {
+    static int last = -1;
+    if (!cam_direct() || !in_level()) { last = -1; return; }
+    int n = rd8(SEL_COUNT);
+    if (last >= 0 && n != last && n > 0 && (int32_t)(now_ms() - sel_until) < 0) haptic("select");
+    last = n;
+}
 void touch_frame_hook(CPU *R, int site) {
     if (site >= 0 && site < 4) g_hook_n[site]++;
+    sel_tick();
+    for (int i = 0; i < w_n; i++) {
+        uint32_t v = w_rd(i);
+        if (v != w_val[i]) { tlogf("watch %08x %x -> %x", w_addr[i], w_val[i], v); w_val[i] = v; }
+    }
     if (zoom_want < 0) return;
     float u = zoom_want; zoom_want = -1;
     if (zoom_direct()) zoom_apply(R, u);
@@ -654,6 +691,7 @@ static void on_finger(const SDL_Event *e) {
         if (nfing == 0) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
             gesture = G_ONE; g_moved = g_long = g_pan1 = 0; g_t0 = now_ms(); g_pen1 = is_pen;
+            if (in_level()) ios_haptic_prepare();
             float gx, gy; win_to_game(x, y, &gx, &gy); cursor_to(gx, gy);   // cursor follows the finger (tooltips)
         } else if (nfing == 1 && gesture == G_ONE && !g_drag && !g_pen1) {
             // a second finger turns a one-finger pan (or a touch) into a two-finger gesture (pinch, twist)
@@ -686,6 +724,7 @@ static void on_finger(const SDL_Event *e) {
                     // selection box: the pencil, the R-CLICK button held, or a press-and-hold first.
                     // Press the left button where the finger landed (the cursor is already there).
                     if (rmb_held) rmb_used = 1;
+                    if (!g_long) haptic("box");   // a press-and-hold buzzed already, when it armed
                     g_moved = 1; g_drag = 1; drag_release_ms = 0;
                     if (up_pending[0]) mouse_button(0, 0);
                     press_pending = 0; release_after = 0;
@@ -716,6 +755,7 @@ static void on_finger(const SDL_Event *e) {
         set_held(0);
         if (g_drag) {
             g_drag = 0;
+            sel_until = now_ms() + SETTLE_MS + SEL_WINDOW_MS;
             if (press_pending >= 0) release_after = 1;   // lifted before the press went out
             else {
                 // final position in its own input batch, then release over it
@@ -905,7 +945,7 @@ static void touch_tick(void) {
     if (mods_down && btn_down < 0 && click_pending < 0 && press_pending < 0 && (int32_t)(t - mods_release_ms) >= 0
         && !di_mouse_btn[0] && !di_mouse_btn[1] && !di_mouse_btn[2]) mods_release();
     // press-and-hold arms a selection box (drag) or a right click (lift without moving); shown by a ring
-    if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; if (rmb_held) rmb_used = 1; }
+    if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; if (rmb_held) rmb_used = 1; haptic("hold"); }
     if (gesture == G_ONE && g_pan1 && g_pan1_dirty && nfing >= 1) {
         g_pan1_dirty = 0;
         grab_pan(fing[0].x, fing[0].y);
