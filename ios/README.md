@@ -57,6 +57,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | RIGHT CLICK, bottom left (left thumb) | tap: right click where the cursor is (deselects the selection; over a unit, panel icon or building it does what a right click there does: query, zoom to the shaman...) |
 | RIGHT CLICK held + one-finger drag | grab and move the world 1:1, like a two-finger drag (no selection box) |
 | RIGHT CLICK held + tap on the game | right click at that spot (query, or deselect on empty ground) |
+| Text fields (save game names) | the iOS keyboard comes up while the game has a text field open (D3DPopTB.exe keeps it at `0xa6905c`) and goes away when it closes; the view slides up so the row being edited stays above the keyboard; Return saves, as in the game |
 | Apple Pencil | works exactly like a finger (tap, drag, RIGHT CLICK held + drag/tap); while it touches the game, other fingers on the game are ignored (palm) but the buttons still work; hovering moves the cursor where the hardware senses it |
 
 Fingers on buttons don't count towards gestures, so RIGHT CLICK can be held with the left thumb while

@@ -799,13 +799,38 @@ static int touch_event(const SDL_Event *e) {
         if (kbm_relative) { kbm_active = 1; touch_owned = 0; return 0; }   // desktop path, like the Mac
         return e->type == SDL_EVENT_MOUSE_WHEEL ? 0 : on_pointer(e);
     case SDL_EVENT_KEY_DOWN:
-        kbm_active = 1; return 0;
+        if (!SDL_TextInputActive(win)) kbm_active = 1;   // (the on-screen keyboard isn't a hardware keyboard)
+        return 0;
     }
     return 0;
 }
 
+// iOS keyboard: shown while the game has a text field open (save game names): D3DPopTB.exe keeps the
+// active field at 0xa6905c (0 when none). Its letters arrive as key presses plus text (WM_KEYDOWN +
+// WM_CHAR), like a desktop keyboard; Return confirms, as in the game.
+static void text_tick(uint32_t t) {
+    extern const char *g_exe_name;
+    static uint32_t last; static int shown;
+    if (t - last < 100) return;
+    last = t;
+    int want = !strcasecmp(g_exe_name, "D3DPopTB.exe") && rd32(0xa6905cu) != 0;
+    if (want == shown) return;
+    shown = want;
+    if (want) {
+        // the field is the row just tapped (where the cursor is); iOS slides the view up so that row stays
+        // above the keyboard
+        float x0, y0, x1, y1;
+        map_to_window(0, vy - 14, &x0, &y0);
+        map_to_window((float)tex_w, vy + 30, &x1, &y1);   // (some room under the row)
+        SDL_Rect r = {(int)x0, (int)y0, (int)(x1 - x0), (int)(y1 - y0)};
+        SDL_SetTextInputArea(win, &r, 0);
+        SDL_StartTextInput(win);
+    } else SDL_StopTextInput(win);
+    tlogf("keyboard %s", want ? "shown" : "hidden");
+}
 static void touch_tick(void) {
     uint32_t t = now_ms();
+    text_tick(t);
     static uint32_t pen_check;
     if (pen_down && t - pen_check > 500) {   // a lost pencil-up must not leave fingers ignored
         pen_check = t;
