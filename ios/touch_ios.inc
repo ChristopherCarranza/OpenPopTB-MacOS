@@ -2,17 +2,18 @@
 // vx/vy, vmove, mouse_button, up_pending, down_ms, send_key).
 //
 //   tap                  left click (on release, so a drag is never a click)
-//   long press           right click (query / cancel)
+//   one-finger drag      pan: the world follows the finger 1:1
+//   press-and-hold       arms a selection box (a ring shows): drag = box from where the finger landed;
+//                         lift without moving = right click (query)
 //   two-finger tap       right click
-//   one-finger drag      selection box (left button held from where the finger landed), as with a mouse
 //   two-finger drag      grab and move the world: it follows the fingers and stops when they stop
 //                         (each PAN_STEP of travel holds an arrow / Ctrl+arrow key for PAN_PULSE_MS)
 //   two-finger twist     turn the world with the fingers (Left/Right pulses per TWIST_STEP)
 //   pinch / spread       zoom out / in with the fingers (3D: continuous, plat_frame_hook; else one = / - step
 //                         per PINCH_STEP of spread)
-//   left column (levels)  MENU (Esc), PAUSE (P), SKIP (Space), WORLD (Return) at the top; RIGHT CLICK at
-//                         the bottom for the left thumb: tap = right click at the cursor (deselect); held:
-//                         one-finger drag pans the world 1:1, a tap on the game right-clicks there (query)
+//   left column (levels)  MENU (Esc), PAUSE (P), SKIP (Space), WORLD (Return) at the top; R-CLICK / HOLD:BOX
+//                         at the bottom for the left thumb: tap = right click at the cursor (deselect); held:
+//                         a one-finger drag draws a selection box, a tap on the game right-clicks there
 //                         (SHIFT / CTRL / ALT buttons: off, THUMB_MODS)
 //   edge scrolling       the game scrolls while its cursor sits at a screen edge; after a touch ends near
 //                         an edge the cursor is moved inward so the map doesn't keep drifting
@@ -197,13 +198,13 @@ typedef struct { const char *label; SDL_Scancode sc; int kind, mod; } Btn;   // 
 static const Btn btns[] = {
     {"MENU", SDL_SCANCODE_ESCAPE, B_KEY, -1}, {"PAUSE", SDL_SCANCODE_P, B_KEY, -1},
     {"SKIP", SDL_SCANCODE_SPACE, B_KEY, -1}, {"WORLD", SDL_SCANCODE_RETURN, B_KEY, -1},
-    {"RIGHT", SDL_SCANCODE_UNKNOWN, B_RMB, -1},
+    {"R-CLICK", SDL_SCANCODE_UNKNOWN, B_RMB, -1},
 };
 #define NBTN ((int)(sizeof btns / sizeof btns[0]))
 #define KEY_H 38       // column: key buttons at the top
 #define KEY_GAP 8
-#define RMB_H 110      // RIGHT CLICK at the bottom, in reach of the left thumb
-static int rmb_held, rmb_used;      // RIGHT CLICK is held / was used for something while held
+#define RMB_H 110      // R-CLICK / HOLD:BOX at the bottom, in reach of the left thumb
+static int rmb_held, rmb_used;      // R-CLICK is held / was used for something while held
 static int btn_down = -1;
 static unsigned btn_mods;            // modifiers pressed with the current key button
 static uint32_t btn_down_ms;
@@ -238,6 +239,7 @@ static void btn_release(void) {
     if (btn_mods) mods_release();
     btn_mods = 0; btn_down = -1;
 }
+static void draw_hold_ring(float ps);
 static void touch_draw_overlay(void) {
     if (!in_level() || kbm_active) return;
     int ww, wh, ow, oh;
@@ -263,18 +265,19 @@ static void touch_draw_overlay(void) {
         SDL_SetRenderDrawColor(ren, 230, 190, 90, 200);
         SDL_RenderRect(ren, &p);
         if (bit && (mod_lock & bit)) { SDL_FRect q = {p.x + ps, p.y + ps, p.w - 2 * ps, p.h - 2 * ps}; SDL_RenderRect(ren, &q); }
-        int two = btns[i].kind == B_RMB;   // "RIGHT" / "CLICK" on two lines
-        float kk = two ? k * 1.4f : k;
+        int two = btns[i].kind == B_RMB;   // "R-CLICK" / "HOLD:BOX" on two lines
+        float kk = k;
         float th = 8 * kk, lh = two ? th * 1.6f : 0;
         SDL_SetRenderScale(ren, kk, kk);
         SDL_SetRenderDrawColor(ren, 245, 225, 160, 255);
         for (int ln = 0; ln <= two; ln++) {
-            const char *txt = ln ? "CLICK" : btns[i].label;
+            const char *txt = ln ? "HOLD:BOX" : btns[i].label;
             float tw = (float)strlen(txt) * 8 * kk, ty = p.y + (p.h - th - lh) / 2 + ln * lh;
             SDL_RenderDebugText(ren, (p.x + (p.w - tw) / 2) / kk, ty / kk, txt);
         }
         SDL_SetRenderScale(ren, 1, 1);
     }
+    draw_hold_ring(ps);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_SetRenderLogicalPresentation(ren, lw, lh, mode);
 }
@@ -374,7 +377,23 @@ static void grab_pan(float cx, float cy) {
     while (g_px - cx > PAN_STEP) { EXTEND(3, PAN_PULSE_MS); g_px -= PAN_STEP; }
     #undef EXTEND
 }
-static int g_pan1, g_pan1_dirty;   // one-finger pan (RIGHT CLICK held), finger moved since the last frame
+static int g_pan1, g_pan1_dirty;
+static int g_pen1;                 // the one-finger gesture is the Apple Pencil (drags draw boxes)
+// a press-and-hold has armed a selection box: a ring around the finger until it moves or lifts
+static void draw_hold_ring(float ps) {
+    if (gesture != G_ONE || !g_long || g_moved || !nfing) return;
+    float cx = fing[0].x * ps, cy = fing[0].y * ps;
+    for (int r = 0; r < 3; r++) {
+        float rad = (34.0f + r) * ps;
+        SDL_FPoint pts[49];
+        for (int i = 0; i <= 48; i++) {
+            float a = (float)i * 2 * SDL_PI_F / 48;
+            pts[i] = (SDL_FPoint){cx + SDL_cosf(a) * rad, cy + SDL_sinf(a) * rad};
+        }
+        SDL_SetRenderDrawColor(ren, 245, 205, 90, 230);
+        SDL_RenderLines(ren, pts, 49);
+    }
+}   // one-finger pan (a plain finger drag), finger moved since the last frame
 
 static void two_finger_tick(void) {
     if (!g_two_dirty || gesture != G_TWO || nfing != 2) return;
@@ -634,9 +653,11 @@ static void on_finger(const SDL_Event *e) {
         } else if (pen_down) { tlogf("  palm ignored"); return; }   // palm rejection: no finger gestures while the pencil touches
         if (nfing == 0) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
-            gesture = G_ONE; g_moved = g_long = g_pan1 = 0; g_t0 = now_ms();
+            gesture = G_ONE; g_moved = g_long = g_pan1 = 0; g_t0 = now_ms(); g_pen1 = is_pen;
             float gx, gy; win_to_game(x, y, &gx, &gy); cursor_to(gx, gy);   // cursor follows the finger (tooltips)
-        } else if (nfing == 1 && gesture == G_ONE && !g_drag && !g_pan1) {
+        } else if (nfing == 1 && gesture == G_ONE && !g_drag && !g_pen1) {
+            // a second finger turns a one-finger pan (or a touch) into a two-finger gesture (pinch, twist)
+            g_pan1 = 0;
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
             set_held(0);
             gesture = G_TWO; g_moved = 0; g_two_mode = 0; g_two_dirty = 0; g_t0 = now_ms();
@@ -658,17 +679,21 @@ static void on_finger(const SDL_Event *e) {
         f->x = x; f->y = y;
         // one-finger gestures follow the finger that started them: another one landing meanwhile (a thumb
         // resting near the minimap) must not move the box or the cursor
-        if (gesture == G_ONE && !g_long && f == &fing[0]) {
+        if (gesture == G_ONE && f == &fing[0]) {
             float dx = f->x - f->x0, dy = f->y - f->y0;
-            if (!g_moved && rmb_held && dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
-                // RIGHT CLICK held: the drag grabs the world from where the finger landed (no box)
-                g_moved = 1; g_pan1 = 1; rmb_used = 1;
-                g_px = f->x0; g_py = f->y0;
-            } else if (!g_moved && dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
-                // drag: press the left button where the finger landed (the cursor is already there)
-                g_moved = 1; g_drag = 1; drag_release_ms = 0;
-                if (up_pending[0]) mouse_button(0, 0);
-                press_pending = 0; release_after = 0;
+            if (!g_moved && dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
+                if (g_pen1 || rmb_held || g_long) {
+                    // selection box: the pencil, the R-CLICK button held, or a press-and-hold first.
+                    // Press the left button where the finger landed (the cursor is already there).
+                    if (rmb_held) rmb_used = 1;
+                    g_moved = 1; g_drag = 1; drag_release_ms = 0;
+                    if (up_pending[0]) mouse_button(0, 0);
+                    press_pending = 0; release_after = 0;
+                } else {
+                    // a plain finger drag grabs the world from where the finger landed
+                    g_moved = 1; g_pan1 = 1;
+                    g_px = f->x0; g_py = f->y0;
+                }
             }
             if (g_pan1) g_pan1_dirty = 1;   // applied once per frame in touch_tick
             if (g_drag) {
@@ -699,8 +724,10 @@ static void on_finger(const SDL_Event *e) {
             }
         } else if (g_pan1) {
             g_pan1 = 0;
-        } else if (!cancelled && !g_moved && !g_long) {
-            if (rmb_held) { rmb_used = 1; click(1); }   // RIGHT CLICK held: a tap right-clicks there (query)
+        } else if (!cancelled && !g_moved && g_long) {
+            click(1);   // press-and-hold without moving: right click (query), on lift
+        } else if (!cancelled && !g_moved) {
+            if (rmb_held) { rmb_used = 1; click(1); }   // R-CLICK held: a tap right-clicks there (query)
             else click(0);
         }
         gesture = G_NONE;
@@ -877,7 +904,8 @@ static void touch_tick(void) {
     // modifiers of a click go up once its buttons are released
     if (mods_down && btn_down < 0 && click_pending < 0 && press_pending < 0 && (int32_t)(t - mods_release_ms) >= 0
         && !di_mouse_btn[0] && !di_mouse_btn[1] && !di_mouse_btn[2]) mods_release();
-    if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; if (rmb_held) rmb_used = 1; click(1); }
+    // press-and-hold arms a selection box (drag) or a right click (lift without moving); shown by a ring
+    if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; if (rmb_held) rmb_used = 1; }
     if (gesture == G_ONE && g_pan1 && g_pan1_dirty && nfing >= 1) { g_pan1_dirty = 0; grab_pan(fing[0].x, fing[0].y); }
     two_finger_tick();
     pan_keys_tick();

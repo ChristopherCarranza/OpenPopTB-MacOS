@@ -54,22 +54,22 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Gesture | Does |
 |---|---|
 | Tap | left click (on release, so a drag never clicks) |
-| Long press (0.5 s) | right click (query) |
+| Press and hold (0.5 s) | arms a selection box (a gold ring shows): then drag = box; lift without moving = right click (query) |
 | Two-finger tap | right click |
-| One-finger drag | selection box (left button held from where the finger landed), as with a mouse; only the finger that started it counts (a resting thumb is ignored) |
+| One-finger drag | pan: the world follows the finger 1:1 (3D build; key pulses otherwise). A second finger turns it into a pinch or twist |
 | Two-finger drag | grab and move the world: the camera follows the fingers 1:1 (3D build, direct camera write; other builds use scroll-key pulses) |
 | Two-finger twist | turn the world like a dial, 1:1 with the fingers (3D build writes the heading directly) |
 | Pinch / spread | zoom out / in with the fingers: the picture scales with the finger spread (3D build, see Direct zoom; other builds step = / - once per 15% of spread) |
 | Left column, top (in levels only) | MENU (Esc), PAUSE (P), SKIP flyby (Space), WORLD (Return) |
-| RIGHT CLICK, bottom left (left thumb) | tap: right click where the cursor is (deselects the selection; over a unit, panel icon or building it does what a right click there does: query, zoom to the shaman...) |
-| RIGHT CLICK held + one-finger drag | grab and move the world 1:1, like a two-finger drag (no selection box) |
-| RIGHT CLICK held + tap on the game | right click at that spot (query, or deselect on empty ground) |
+| R-CLICK / HOLD:BOX, bottom left (left thumb) | tap: right click where the cursor is (deselects the selection; over a unit, panel icon or building it does what a right click there does: query, zoom to the shaman...) |
+| R-CLICK held + one-finger drag | selection box (the quick way; a press-and-hold also works) |
+| R-CLICK held + tap on the game | right click at that spot (query, or deselect on empty ground) |
 | Game cursor | hidden while you play by touch or pencil; shown while a real mouse or trackpad is used (iPad with a mouse). Last input wins: a touch hides it, moving the mouse brings it back. The 3D game BltFasts its 32x32 cursor surface (object at `0x5d5718`); `runtime/ddraw.c` skips those blits while hidden |
 | Text fields (save game names) | the iOS keyboard comes up while the game has a text field open (D3DPopTB.exe keeps it at `0xa6905c`) and goes away when it closes; the view slides up so the row being edited stays above the keyboard; Return saves, as in the game |
-| Apple Pencil | works exactly like a finger (tap, drag, RIGHT CLICK held + drag/tap); while it touches the game, other fingers on the game are ignored (palm) but the buttons still work; hovering moves the cursor where the hardware senses it |
+| Apple Pencil | taps like a finger; a pencil drag draws a selection box (no hold needed). While it touches the game, other fingers on the game are ignored (palm) but the buttons still work; hovering moves the cursor where the hardware senses it |
 
-Fingers on buttons don't count towards gestures, so RIGHT CLICK can be held with the left thumb while
-the right hand drags or taps. A pan keeps going if RIGHT CLICK is let go before the finger lifts. The
+Fingers on buttons don't count towards gestures, so R-CLICK can be held with the left thumb while
+the right hand drags or taps. The
 SHIFT / CTRL / ALT buttons from earlier versions are still in the code but off (`THUMB_MODS`); SHAMAN,
 SAVE and the group buttons were dropped (keyboard: . F9 1-6; the game's own panel has the shaman too).
 
