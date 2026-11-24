@@ -35,6 +35,13 @@ changes, the folder is disposable.
 `POPTB_BUNDLE_ID` overrides the bundle id. The game folder defaults to
 `~/Library/Application Support/OpenPopTB/Game` (where the Mac app unpacks the GOG installer).
 
+## App icon
+`ios/AppIcon.xcassets` holds one 1024 px icon: the game's "POPULOUS The Beginning" title logo, keyed out
+of the main menu and set on the menu's carved stone (`assets/icons/ios/make_icon.py` rebuilds it from a
+full-resolution menu screenshot). The Ninja build compiles it with `actool` into the bundle after
+linking; the Xcode project compiles the catalog itself. If an old blank icon stays on a home screen,
+that is the icon cache: restart the device (or the simulator's SpringBoard).
+
 ## Game data
 The app reads the game from its `Documents/Game` folder (visible in the Files app and Finder, so
 saves land there too). Copy the game folder in once, e.g.:

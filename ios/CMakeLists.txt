@@ -42,4 +42,26 @@ set_target_properties(PopulousTB PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "${APP_NAME}"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${POPTB_BUNDLE_ID}"
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
-    XCODE_ATTRIBUTE_SUPPORTED_PLATFORMS "iphoneos iphonesimulator")
+    XCODE_ATTRIBUTE_SUPPORTED_PLATFORMS "iphoneos iphonesimulator"
+    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon")
+
+# App icon: one 1024 px image (AppIcon.xcassets); actool makes every size and Assets.car. The Xcode
+# generator compiles the catalog itself; the Ninja build runs actool into the bundle after linking.
+set(APP_ICONS ${CMAKE_CURRENT_SOURCE_DIR}/AppIcon.xcassets)
+if(CMAKE_GENERATOR STREQUAL "Xcode")
+  target_sources(PopulousTB PRIVATE ${APP_ICONS})
+  set_source_files_properties(${APP_ICONS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+else()
+  if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+    set(ACTOOL_PLATFORM iphonesimulator)
+  else()
+    set(ACTOOL_PLATFORM iphoneos)
+  endif()
+  add_custom_command(TARGET PopulousTB POST_BUILD
+    COMMAND xcrun actool ${APP_ICONS} --compile $<TARGET_BUNDLE_DIR:PopulousTB>
+            --platform ${ACTOOL_PLATFORM} --minimum-deployment-target ${CMAKE_OSX_DEPLOYMENT_TARGET}
+            --target-device iphone --target-device ipad --app-icon AppIcon
+            --output-partial-info-plist ${CMAKE_CURRENT_BINARY_DIR}/appicon-info.plist
+            --output-format human-readable-text > ${CMAKE_CURRENT_BINARY_DIR}/actool.log
+    COMMENT "Compiling the app icon")
+endif()
