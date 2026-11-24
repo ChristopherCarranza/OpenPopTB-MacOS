@@ -86,9 +86,10 @@ The game reads only relative mouse motion and keeps its own cursor per screen, e
 rect (whole screen in menus, 64,48-576,432 in a software-rendered level), read from the mouse thread
 object (`popTB.exe` 0x973e94, `D3DPopTB.exe` 0xd0595c: cursor at +0x20, rect at +0x38). When the
 game's cursor matches ours the move is sent directly; otherwise ("homing") a huge up-left motion pins
-every cursor to the rect's corner, then the distance from that corner to the finger is sent. Never while a
-button is held (a box being dragged): the corner sweep would press on the minimap and move the camera, so
-the move carries on from the game's own cursor instead. Frames
+every cursor to the rect's corner, then the distance from that corner to the finger is sent. Only outside a
+level and with no button held: in a level the corner sweep makes the game edge-scroll the map for a few
+frames (seen on every Apple Pencil tap, whose hover leaves the game a move behind at touch-down), and with a
+button held it presses on the minimap. There the move carries on from the game's own cursor instead. Frames
 drawn while homing are not shown, so the cursor never visibly jumps to the corner.
 
 The buttons show only while a level is loaded: the game's mode word (`popTB.exe` 0x599ab4,
@@ -154,7 +155,7 @@ of silence from the device, so nothing waits forever; the device takes over agai
 ## Debugging
 `POPTB_DEBUG_CMDS=1` makes the app read commands from `Documents/poptb_cmd.txt` twice a second and
 append results to `Documents/poptb_dbg.txt`: `find X Y T`, `filt X Y T`, `peek ADDR N`,
-`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `mouse down|up|move X Y` (raw left button, game pixels), `edge N`, `finger down|up|move ID X Y [pen]` (inject touches, window points; `pen` = as the Apple Pencil), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `zoomu U` (pinch-zoom position 0..3), `dump NAME` (0x400000-0x1000000 to
+`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `mouse down|up|move X Y` (raw left button, game pixels), `edge N`, `finger down|up|move ID X Y [pen]` (inject touches, window points; `pen` = as the Apple Pencil), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `zoomu U` (pinch-zoom position 0..3), `touchlog` (the last 160 touches and what they turned into: clicks, homings, gestures, camera), `dump NAME` (0x400000-0x1000000 to
 `Documents/dump_NAME.bin`, for diffing game state between screens), `stall 1|0` (ignore the audio
 device, to test the stall watchdog). The input script (`--script`) also takes
 `ttap:x,y` (touch tap in game coordinates).

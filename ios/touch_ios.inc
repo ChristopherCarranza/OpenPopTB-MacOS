@@ -27,6 +27,21 @@
 // distance from that corner to the finger. Frames drawn while homing are not presented, so the cursor
 // never visibly jumps to the corner. In sync (the usual case inside a level), the move is direct.
 
+#include <stdarg.h>
+// ---- touch log (debug "touchlog"): the last touches and what they turned into, to diagnose on a device ----
+#define TLOG_N 160
+static struct { uint32_t t; char s[72]; } tlog[TLOG_N];
+static int tlog_n, tlog_hover;
+static uint32_t tlog_cam(void) { return *(volatile uint32_t *)PTR(0x89d1ecu); }
+static void tlogf(const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    int i = tlog_n++ % TLOG_N;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    tlog[i].t = (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+    vsnprintf(tlog[i].s, sizeof tlog[i].s, fmt, ap);
+    va_end(ap);
+}
+
 #define THUMB_STRIP 100      // points reserved left of the game picture for the button column (levels)
 #define LEFT_COLUMN 1        // the button column on the left (the game picture shrinks for it in levels)
 #define THUMB_MODS 0         // SHIFT/CTRL/ALT buttons (none in the column at the moment)
@@ -111,10 +126,12 @@ static void cursor_to(float gx, float gy) {
     if (gy < y0) gy = (float)y0; if (gy > y1 - 1) gy = (float)(y1 - 1);
     if (home_phase) { home_tx = gx; home_ty = gy; return; }
     if (cursor_in_sync()) { vmove(gx, gy); post_move(); settle_ms = now_ms(); return; }
-    if (di_mouse_btn[0] || di_mouse_btn[1] || di_mouse_btn[2]) {
-        // a button is held (a box being dragged): homing would sweep the pressed cursor to the corner, over
-        // the minimap, and move the camera there. The game is only behind on our last move or clamped it, so
-        // carry on from its own cursor once it has taken all our moves.
+    if (di_mouse_btn[0] || di_mouse_btn[1] || di_mouse_btn[2] || in_level()) {
+        // No homing in a level or while a button is held: the sweep to the corner would sit on the screen
+        // edge for a few frames (the game edge-scrolls the map) or press on the minimap (the camera jumps).
+        // In a level there is one cursor; the game is only behind on our last moves (e.g. a hovering pencil
+        // just before it touches down) or clamped one. Carry on from its own cursor once it has taken all
+        // our moves.
         uint32_t o = mouse_obj();
         if (o && di_mouse_count() == 0) { vx = (float)(int32_t)rd32(o + 0x20); vy = (float)(int32_t)rd32(o + 0x24); }
         vmove(gx, gy); post_move(); settle_ms = now_ms();
@@ -123,12 +140,13 @@ static void cursor_to(float gx, float gy) {
     }
     raw_delta(-4096, -4096);
     g_home_count++;
+    tlogf("homing (button %d)", di_mouse_btn[0]);
     home_phase = 1; home_ms = now_ms(); home_tx = gx; home_ty = gy;
 }
 static int cursor_settled(void) { return !home_phase && now_ms() - settle_ms >= SETTLE_MS; }
 static uint32_t hide_until;
 static int frame_held(void) { return home_phase || (int32_t)(hide_until - now_ms()) > 0; }
-static void click(int b) { if (up_pending[b]) mouse_button(b, 0); click_pending = b; }
+static void click(int b) { if (up_pending[b]) mouse_button(b, 0); click_pending = b; tlogf("click %d", b); }
 
 // ---- held keys (scrolling, rotation, zoom) ----
 enum { HK_UP = 1, HK_DOWN = 2, HK_LEFT = 4, HK_RIGHT = 8, HK_CTRL = 16, HK_ZIN = 32, HK_ZOUT = 64 };   // zoom bits unused (zoom_step)
@@ -371,6 +389,7 @@ static void two_finger_tick(void) {
         if (spread > g_d0 * (PINCH_STEP - 1) && spread > pan) g_two_mode = 1;
         else if (SDL_fabsf(da) > TWIST_DEAD) g_two_mode = 3;
         else if (pan > JOY_DEAD) g_two_mode = 2;
+        if (g_two_mode) tlogf("two-finger mode %d (1 zoom 2 pan 3 twist)", g_two_mode);
         if (g_two_mode == 1) { g_zd0 = d; g_zv0 = zoom_v(zoom_now()); }   // pinch counts from here too
         if (g_two_mode == 2 || g_two_mode == 3) {
             // count movement from here: the dead zone travel would otherwise land in one frame as a jump
@@ -583,6 +602,9 @@ static void on_finger(const SDL_Event *e) {
     int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
     float x = e->tfinger.x * ww, y = e->tfinger.y * wh;   // window points
     int is_pen = e->tfinger.touchID == SDL_PEN_TOUCHID;
+    if (e->type != SDL_EVENT_FINGER_MOTION)
+        tlogf("%s %s %d @%.0f,%.0f nf%d g%d pen%d rmb%d bf%d cam%08x", e->type == SDL_EVENT_FINGER_DOWN ? "DOWN" : "UP",
+              is_pen ? "PEN" : "fng", (int)(e->tfinger.fingerID % 1000), x, y, nfing, gesture, pen_down, rmb_held, nbfing, tlog_cam());
     if (e->type == SDL_EVENT_FINGER_DOWN) {
         // a lost finger-up would leave a ghost finger and swallow later taps: if this is the only finger
         // the system knows about, start from a clean state. Not for the pencil: it is a touch device of its
@@ -609,7 +631,7 @@ static void on_finger(const SDL_Event *e) {
         if (is_pen) {   // the pencil always drives: a finger gesture in progress (a palm) gives way
             if (nfing) gesture_abandon();
             pen_down = 1;
-        } else if (pen_down) return;   // palm rejection: no finger gestures while the pencil touches
+        } else if (pen_down) { tlogf("  palm ignored"); return; }   // palm rejection: no finger gestures while the pencil touches
         if (nfing == 0) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
             gesture = G_ONE; g_moved = g_long = g_pan1 = 0; g_t0 = now_ms();
@@ -757,6 +779,7 @@ static int touch_event(const SDL_Event *e) {
         if (!(e->pmotion.pen_state & SDL_PEN_INPUT_DOWN) && !nfing && gesture == G_NONE && !home_phase) {
             float gx, gy; win_to_game(e->pmotion.x, e->pmotion.y, &gx, &gy);
             touch_owned = 1; last_touch_ms = now_ms(); kbm_active = 0;
+            tlog_hover++;
             cursor_to(gx, gy);
         }
         return 1;
@@ -849,6 +872,11 @@ void touch_debug_finger(int down, int id, float x, float y, int pen) {
     e.tfinger.touchID = pen ? SDL_PEN_TOUCHID : 0xD0D0; e.tfinger.fingerID = (SDL_FingerID)(1000 + id);
     e.tfinger.x = x / ww; e.tfinger.y = y / wh;
     SDL_PushEvent(&e);
+}
+void touch_debug_log(FILE *out) {
+    int n = tlog_n < TLOG_N ? tlog_n : TLOG_N;
+    fprintf(out, "dbg touchlog: %d entries, pen hover moves %d, now cam%08x\n", tlog_n, tlog_hover, tlog_cam());
+    for (int k = tlog_n - n; k < tlog_n; k++) fprintf(out, "%10u %s\n", tlog[k % TLOG_N].t, tlog[k % TLOG_N].s);
 }
 void touch_debug_layout(FILE *out) {
     int ww, wh, ow, oh, pw, ph; SDL_Rect safe = {0};

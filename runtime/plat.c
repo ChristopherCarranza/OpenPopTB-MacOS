@@ -229,6 +229,10 @@ static void debug_cmds(void) {
                 else if (!strcmp(what, "up")) mouse_button(0, 0);
                 fprintf(out, "dbg mouse %s %.0f %.0f\n", what, mx, my);
             }
+        } else if (!strncmp(line, "touchlog", 8)) {
+#if TARGET_OS_IPHONE
+            void touch_debug_log(FILE *); touch_debug_log(out);
+#endif
         } else if (!strncmp(line, "layout", 6)) {
 #if TARGET_OS_IPHONE
             void touch_debug_layout(FILE *); touch_debug_layout(out);
