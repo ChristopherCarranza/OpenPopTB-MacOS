@@ -154,9 +154,21 @@ The game paces its frames by polling `GetTickCount` until a deadline (D3D: logic
 - **The audio watchdog checks less often** while the device is healthy (every 125 ms).
 
 On an iPhone Duo (Time Profiler, intro/menu), app CPU dropped from about 100% of a core to about 24%.
-Not done yet:
-- each changed texture still gets its own GPU texture and command buffer (`gpu.c`);
-- each 3D frame is still read back to the CPU for compositing.
+- **16-bit frames on the GPU.** Where the GPU takes B5G6R5 (the game's RGB565; real iOS devices, not the
+  simulator), the starting image goes up and the finished frame comes back in that format, with no CPU
+  conversion either way (`fmt565` in `runtime/gpu.c`). This saves about 0.35 ms of CPU per frame.
+- **Textures are reused and uploads batched.** A texture of the same size is updated in place (about 70% of the
+  game's roughly one-per-frame uploads), and all uploads go to the GPU in one command buffer before the next scene.
+
+The 3D frame is still read back to the CPU each frame: the game draws its panel and text on top of it in
+software. (An experiment showed it doesn't blend those with the 3D pixels, but other screens may.) MetalFX
+upscaling from 1x was tried and dropped: on the iPhone it cost more GPU time per frame (about 1.8 ms) than
+rendering at 2x natively (about 1.6 ms), and looked slightly softer.
+
+Debug commands for this: `gpustat` (scenes, texture uploads and reuse, ms per frame for each step),
+`gpureset` (zero the timers), `gpuexp 2|3` (switch to the 32-bit / 16-bit path), `frame NAME` (save the
+read-back frame, RGB565 640x480, to Documents/frame_NAME.raw), `hishot NAME` (save the full-resolution
+3D image, RGBA with a w,h header).
 
 ## Audio stalls
 Videos (and the intro) pace themselves on DirectSound play positions, which only move when the audio

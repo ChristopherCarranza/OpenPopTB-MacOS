@@ -92,7 +92,7 @@ typedef uint32_t PipeKey;
 typedef struct { PipeKey key; SDL_GPUGraphicsPipeline *pipe; } PipeEntry;
 typedef struct { uint32_t mode, afunc, aref, flags; float scale; } FragU;   // flags: 1 specular, 2 flat, 4 point-sampled
 typedef struct { PipeKey key; uint8_t samp; SDL_GPUTexture *tex; FragU fu; uint32_t first, count; } Cmd;
-typedef struct { uint32_t key; SDL_GPUTexture *tex; int has_alpha; } Tex;
+typedef struct { uint32_t key; SDL_GPUTexture *tex; int has_alpha, w, h, levels; } Tex;
 
 static SDL_GPUDevice *dev;
 static SDL_GPUShader *vs, *fs;
@@ -108,9 +108,15 @@ static size_t ndead, capdead;
 
 static int sw, sh, scale;              // scene size in game pixels, internal scale
 static SDL_GPUTexture *target, *depth, *bgtex, *small;
+
 static int tw, th;                     // size the targets were created for (game pixels and scale)
 static int tscale;
-static uint32_t *bg;                   // starting image, RGBA8
+static uint32_t *bg;                   // starting image, RGBA8 (when the GPU can't take the game's RGB565 directly)
+static uint16_t *bg16;                 // starting image, the game's RGB565 as is (fmt565)
+static int fmt565;                     // the GPU samples and renders B5G6R5 (the game's 16-bit format): the
+                                       // background goes up and the frame comes back without CPU conversion
+// (ucb, declared with tex_retire: texture uploads since the last scene, submitted together before it)
+static SDL_GPUCopyPass *ucp;
 static GpuVertex *verts;
 static size_t nverts, capverts;
 static uint32_t *idx;
@@ -154,6 +160,12 @@ static void init(void) {
     depth_fmt = SDL_GPUTextureSupportsFormat(dev, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, SDL_GPU_TEXTURETYPE_2D,
                                              SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)
         ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT : SDL_GPU_TEXTUREFORMAT_D24_UNORM;
+    fmt565 = SDL_GPUTextureSupportsFormat(dev, SDL_GPU_TEXTUREFORMAT_B5G6R5_UNORM, SDL_GPU_TEXTURETYPE_2D,
+                                          SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+#if defined(TARGET_OS_SIMULATOR) && TARGET_OS_SIMULATOR
+    fmt565 = 0;   // the simulator's Metal rejects B5G6R5 textures although SDL reports them as supported
+#endif
+    if (getenv("POPTB_GPU_NO565")) fmt565 = 0;
     static const uint32_t one = 0xffffffffu;
     const uint32_t *lv = &one;
     gpu_texture_upload(0, 1, 1, 1, &lv);
@@ -233,8 +245,9 @@ static Tex *tex_find(uint32_t key) {
     for (size_t i = 0; i < ntex; i++) if (texs[i].key == key) return &texs[i];
     return NULL;
 }
+static SDL_GPUCommandBuffer *ucb;
 static void tex_retire(SDL_GPUTexture *t) {
-    if (!in_scene) { SDL_ReleaseGPUTexture(dev, t); return; }
+    if (!in_scene && !ucb) { SDL_ReleaseGPUTexture(dev, t); return; }   // (queued uploads may still write it)
     dead = grow(dead, &capdead, ndead + 1, sizeof *dead);
     dead[ndead++] = t;
 }
@@ -251,20 +264,34 @@ static void *map_upload(uint32_t size) {
     return p;
 }
 
+uint32_t g_tex_reused;
+int gpu_uses_565(void) { return fmt565; }
+char *g_dump_frame, *g_dump_hi;
+uint64_t g_t_begin_ns, g_t_end_cpu_ns, g_t_gpu_wait_ns;   // diagnostics: time per phase (debug "gpustat", "gpureset")
+int g_gpu_exp;                       // debug "gpuexp N": 1 = fill the readback with magenta (does the CPU read the 3D image?)
+uint32_t g_tex_uploads, g_tex_upload_bytes, g_scenes;   // diagnostics (debug "gpustat")
 void gpu_texture_upload(uint32_t key, int w, int h, int levels, const uint32_t *const *rgba) {
     init();
+    g_tex_uploads++; g_tex_upload_bytes += (uint32_t)w * h * 4;
+    // A texture of the same size is updated in place (cycled by SDL if a scene still uses the old contents);
+    // otherwise a new one replaces it. Uploads are recorded into one command buffer, submitted before the next
+    // scene, instead of a submit each.
     Tex *t = tex_find(key);
-    if (t) tex_retire(t->tex);
-    else {
+    int reuse = t && t->w == w && t->h == h && t->levels == levels;
+    if (t && !reuse) tex_retire(t->tex);
+    else if (!t) {
         texs = grow(texs, &captex, ntex + 1, sizeof *texs);
         t = &texs[ntex++];
         t->key = key;
     }
-    SDL_GPUTextureCreateInfo ci = {
-        .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
-        .width = (Uint32)w, .height = (Uint32)h, .layer_count_or_depth = 1, .num_levels = (Uint32)levels, .sample_count = SDL_GPU_SAMPLECOUNT_1,
-    };
-    if (!(t->tex = SDL_CreateGPUTexture(dev, &ci))) die("texture");
+    if (!reuse) {
+        SDL_GPUTextureCreateInfo ci = {
+            .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+            .width = (Uint32)w, .height = (Uint32)h, .layer_count_or_depth = 1, .num_levels = (Uint32)levels, .sample_count = SDL_GPU_SAMPLECOUNT_1,
+        };
+        if (!(t->tex = SDL_CreateGPUTexture(dev, &ci))) die("texture");
+        t->w = w; t->h = h; t->levels = levels;
+    } else g_tex_reused++;
     t->has_alpha = 0;
     for (size_t i = 0, n = (size_t)w * h; i < n && !t->has_alpha; i++) t->has_alpha = rgba[0][i] >> 24 != 255;
     uint32_t total = 0;
@@ -276,17 +303,20 @@ void gpu_texture_upload(uint32_t key, int w, int h, int levels, const uint32_t *
         off += n;
     }
     SDL_UnmapGPUTransferBuffer(dev, up);
-    SDL_GPUCommandBuffer *cb = SDL_AcquireGPUCommandBuffer(dev);
-    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cb);
+    if (!ucb) { ucb = SDL_AcquireGPUCommandBuffer(dev); ucp = SDL_BeginGPUCopyPass(ucb); }
     for (int l = 0, off = 0; l < levels; l++) {
         int lw = SDL_max(w >> l, 1), lh = SDL_max(h >> l, 1);
         SDL_GPUTextureTransferInfo src = { .transfer_buffer = up, .offset = (Uint32)off };
         SDL_GPUTextureRegion dst = { .texture = t->tex, .mip_level = (Uint32)l, .w = (Uint32)lw, .h = (Uint32)lh, .d = 1 };
-        SDL_UploadToGPUTexture(cp, &src, &dst, false);
+        SDL_UploadToGPUTexture(ucp, &src, &dst, reuse && l == 0);   // cycle the reused texture once
         off += lw * lh * 4;
     }
-    SDL_EndGPUCopyPass(cp);
-    if (!SDL_SubmitGPUCommandBuffer(cb)) die("submit texture upload");
+}
+static void flush_uploads(void) {
+    if (!ucb) return;
+    SDL_EndGPUCopyPass(ucp);
+    if (!SDL_SubmitGPUCommandBuffer(ucb)) die("submit texture uploads");
+    ucb = NULL; ucp = NULL;
 }
 
 void gpu_texture_free(uint32_t key) {
@@ -324,6 +354,16 @@ static int pick_scale(int h) {
 
 void gpu_begin_scene(int w, int h, const uint16_t *src, int pitch) {
     init();
+    Uint64 t_b0 = SDL_GetTicksNS();
+    if (g_gpu_exp == 2 || g_gpu_exp == 3) {   // debug: switch between the RGB565 and the RGBA8 path
+        int want = g_gpu_exp == 3 && SDL_GPUTextureSupportsFormat(dev, SDL_GPU_TEXTUREFORMAT_B5G6R5_UNORM, SDL_GPU_TEXTURETYPE_2D,
+                                                                  SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+#if defined(TARGET_OS_SIMULATOR) && TARGET_OS_SIMULATOR
+        want = 0;
+#endif
+        if (want != fmt565) { fmt565 = want; tw = 0; }
+        g_gpu_exp = 0;
+    }
     sw = w; sh = h; scale = pick_scale(h);
     if (w != tw || h != th || scale != tscale) {
         SDL_GPUTexture *old[4] = {target, depth, bgtex, small};
@@ -331,13 +371,16 @@ void gpu_begin_scene(int w, int h, const uint16_t *src, int pitch) {
         target = make_tex(w * scale, h * scale, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                           SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
         depth = make_tex(w * scale, h * scale, depth_fmt, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
-        bgtex = make_tex(w, h, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER);
-        small = make_tex(w, h, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
-        free(bg);
-        if (!(bg = malloc((size_t)w * h * 4))) die("out of memory");
+        SDL_GPUTextureFormat io = fmt565 ? SDL_GPU_TEXTUREFORMAT_B5G6R5_UNORM : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        bgtex = make_tex(w, h, io, SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        small = make_tex(w, h, io, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+        free(bg); free(bg16); bg = NULL; bg16 = NULL;
+        if (fmt565 ? !(bg16 = malloc((size_t)w * h * 2)) : !(bg = malloc((size_t)w * h * 4))) die("out of memory");
         tw = w; th = h; tscale = scale;
     }
-    for (int y = 0; y < h; y++) {
+    if (fmt565) {
+        for (int y = 0; y < h; y++) memcpy(bg16 + (size_t)y * w, (const uint8_t *)src + (size_t)y * pitch, (size_t)w * 2);
+    } else for (int y = 0; y < h; y++) {
         const uint16_t *s = (const uint16_t *)((const uint8_t *)src + (size_t)y * pitch);
         uint32_t *d = bg + (size_t)y * w;
         for (int x = 0; x < w; x++) {
@@ -347,6 +390,7 @@ void gpu_begin_scene(int w, int h, const uint16_t *src, int pitch) {
     }
     nverts = nidx = ncmds = 0;
     in_scene = 1;
+    g_t_begin_ns += SDL_GetTicksNS() - t_b0;
     if (dumpf) { fclose(dumpf); dumpf = NULL; }
     static const char *dump_env, *ms; static int env_read;
     if (!env_read) { dump_env = getenv("POPTB_D3D_DUMP"); ms = getenv("POPTB_D3D_DUMP_MS"); env_read = 1; }
@@ -418,11 +462,14 @@ static void ensure_buffer(SDL_GPUBuffer **b, uint32_t *sz, uint32_t need, SDL_GP
 }
 
 void gpu_end_scene(uint16_t *out, int pitch) {
-    uint32_t bg_sz = (uint32_t)sw * sh * 4, v_sz = (uint32_t)(nverts * sizeof *verts), i_sz = (uint32_t)(nidx * sizeof *idx);
+    Uint64 t_e0 = SDL_GetTicksNS();
+    flush_uploads();
+    uint32_t px_sz = fmt565 ? 2 : 4;
+    uint32_t bg_sz = (uint32_t)sw * sh * px_sz, v_sz = (uint32_t)(nverts * sizeof *verts), i_sz = (uint32_t)(nidx * sizeof *idx);
     ensure_buffer(&vbuf, &vbuf_sz, v_sz, SDL_GPU_BUFFERUSAGE_VERTEX);
     ensure_buffer(&ibuf, &ibuf_sz, i_sz, SDL_GPU_BUFFERUSAGE_INDEX);
     uint8_t *p = map_upload(bg_sz + v_sz + i_sz);
-    memcpy(p, bg, bg_sz);
+    memcpy(p, fmt565 ? (const void *)bg16 : (const void *)bg, bg_sz);
     if (v_sz) memcpy(p + bg_sz, verts, v_sz);
     if (i_sz) memcpy(p + bg_sz + v_sz, idx, i_sz);
     SDL_UnmapGPUTransferBuffer(dev, up);
@@ -484,17 +531,49 @@ void gpu_end_scene(uint16_t *out, int pitch) {
     SDL_EndGPUCopyPass(cp);
     SDL_GPUFence *f = SDL_SubmitGPUCommandBufferAndAcquireFence(cb);
     if (!f) die("submit scene");
+    Uint64 t_w0 = SDL_GetTicksNS();
     SDL_WaitForGPUFences(dev, true, &f, 1);
     SDL_ReleaseGPUFence(dev, f);
+    Uint64 t_w1 = SDL_GetTicksNS();
+    g_t_gpu_wait_ns += t_w1 - t_w0;
 
     const uint8_t *px = SDL_MapGPUTransferBuffer(dev, down, false);
     if (!px) die("map download buffer");
     for (int y = 0; y < sh; y++) {
-        const uint8_t *s = px + (size_t)y * sw * 4;
         uint16_t *d = (uint16_t *)((uint8_t *)out + (size_t)y * pitch);
-        for (int x = 0; x < sw; x++, s += 4) d[x] = (uint16_t)((s[0] >> 3) << 11 | (s[1] >> 2) << 5 | s[2] >> 3);
+        if (fmt565) memcpy(d, px + (size_t)y * sw * 2, (size_t)sw * 2);
+        else {
+            const uint8_t *s = px + (size_t)y * sw * 4;
+            for (int x = 0; x < sw; x++, s += 4) d[x] = (uint16_t)((s[0] >> 3) << 11 | (s[1] >> 2) << 5 | s[2] >> 3);
+        }
+        if (g_gpu_exp == 1) for (int x = 0; x < sw; x++) d[x] = 0xf81f;
+    }
+    g_scenes++;
+    if (g_dump_hi) {   // debug "hishot NAME": the full-resolution 3D image as presented (RGBA8, with a w,h header)
+        int iw, ih; SDL_GPUTexture *img = gpu_image(&iw, &ih);
+        SDL_GPUTransferBufferCreateInfo ci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, .size = (Uint32)iw * ih * 4 };
+        SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(dev, &ci);
+        SDL_GPUCommandBuffer *c2 = SDL_AcquireGPUCommandBuffer(dev);
+        SDL_GPUCopyPass *p2 = SDL_BeginGPUCopyPass(c2);
+        SDL_DownloadFromGPUTexture(p2, &(SDL_GPUTextureRegion){ .texture = img, .w = (Uint32)iw, .h = (Uint32)ih, .d = 1 },
+                                   &(SDL_GPUTextureTransferInfo){ .transfer_buffer = tb });
+        SDL_EndGPUCopyPass(p2);
+        SDL_GPUFence *f2 = SDL_SubmitGPUCommandBufferAndAcquireFence(c2);
+        SDL_WaitForGPUFences(dev, true, &f2, 1); SDL_ReleaseGPUFence(dev, f2);
+        const void *hp = SDL_MapGPUTransferBuffer(dev, tb, false);
+        FILE *f = fopen(g_dump_hi, "wb");
+        if (f && hp) { int32_t hd[2] = {iw, ih}; fwrite(hd, 4, 2, f); fwrite(hp, 4, (size_t)iw * ih, f); }
+        if (f) fclose(f);
+        SDL_UnmapGPUTransferBuffer(dev, tb); SDL_ReleaseGPUTransferBuffer(dev, tb);
+        free(g_dump_hi); g_dump_hi = NULL;
+    }
+    if (g_dump_frame) {   // debug "frame NAME": the game's frame as read back (RGB565, sw x sh)
+        FILE *f = fopen(g_dump_frame, "wb");
+        if (f) { for (int y = 0; y < sh; y++) fwrite((uint8_t *)out + (size_t)y * pitch, 2, (size_t)sw, f); fclose(f); }
+        free(g_dump_frame); g_dump_frame = NULL;
     }
     SDL_UnmapGPUTransferBuffer(dev, down);
+    g_t_end_cpu_ns += (SDL_GetTicksNS() - t_e0) - (t_w1 - t_w0);
     for (size_t i = 0; i < ndead; i++) SDL_ReleaseGPUTexture(dev, dead[i]);
     ndead = 0;
     in_scene = 0;
@@ -505,3 +584,4 @@ SDL_GPUTexture *gpu_image(int *w, int *h) {
     if (h) *h = th * tscale;
     return target;
 }
+

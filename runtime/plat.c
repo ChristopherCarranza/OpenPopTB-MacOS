@@ -239,6 +239,32 @@ static void debug_cmds(void) {
             ev.motion.windowID = SDL_GetWindowID(win);
             SDL_PushEvent(&ev);
             fprintf(out, "dbg pointer %.0f %.0f\n", dx, dy);
+        } else if (!strncmp(line, "gpuexp ", 7)) {
+            extern int g_gpu_exp; g_gpu_exp = atoi(line + 7); fprintf(out, "dbg gpuexp %d\n", g_gpu_exp);
+        } else if (!strncmp(line, "hishot ", 7)) {
+            extern char *g_dump_hi; char path[1024], nm[64] = "";
+            sscanf(line + 7, "%63s", nm);
+            snprintf(path, sizeof path, "%s/Documents/hishot_%s.raw", getenv("HOME"), nm);
+            g_dump_hi = strdup(path);
+            fprintf(out, "dbg hishot %s\n", path);
+        } else if (!strncmp(line, "frame ", 6)) {
+            extern char *g_dump_frame; char path[1024], nm[64] = "";
+            sscanf(line + 6, "%63s", nm);
+            snprintf(path, sizeof path, "%s/Documents/frame_%s.raw", getenv("HOME"), nm);
+            g_dump_frame = strdup(path);
+            fprintf(out, "dbg frame %s\n", path);
+        } else if (!strncmp(line, "gpustat", 7)) {
+            extern uint32_t g_tex_uploads, g_tex_upload_bytes, g_scenes, g_tex_reused; int gpu_uses_565(void);
+            extern uint64_t g_t_begin_ns, g_t_end_cpu_ns, g_t_gpu_wait_ns, g_t_present_ns;
+            fprintf(out, "dbg gpustat scenes %u, texture uploads %u (%u KB, %u reused), 565 io %d\n", g_scenes, g_tex_uploads,
+                    g_tex_upload_bytes / 1024, g_tex_reused, gpu_uses_565());
+            double n = g_scenes ? g_scenes : 1;
+            fprintf(out, "dbg gpustat per scene (ms): begin %.3f, end cpu %.3f, gpu wait %.3f, present %.3f\n",
+                    g_t_begin_ns / n / 1e6, g_t_end_cpu_ns / n / 1e6, g_t_gpu_wait_ns / n / 1e6, g_t_present_ns / n / 1e6);
+        } else if (!strncmp(line, "gpureset", 8)) {
+            extern uint64_t g_t_begin_ns, g_t_end_cpu_ns, g_t_gpu_wait_ns, g_t_present_ns; extern uint32_t g_scenes;
+            g_t_begin_ns = g_t_end_cpu_ns = g_t_gpu_wait_ns = g_t_present_ns = 0; g_scenes = 0;
+            fprintf(out, "dbg gpureset\n");
         } else if (!strncmp(line, "now", 3)) {
             fprintf(out, "dbg now game %u ms\n", now_ms());
         } else if (!strncmp(line, "touchlog", 8)) {
@@ -472,7 +498,14 @@ void plat_present(const uint8_t *pix, int w, int h, int pitch, const uint32_t *p
     finish_frame(w, h);
 }
 
+uint64_t g_t_present_ns;   // diagnostics: time in plat_present_hybrid (debug "gpustat")
+static void present_hybrid_impl(const uint16_t *pix, int w, int h, int pitch, const uint16_t *under);
 void plat_present_hybrid(const uint16_t *pix, int w, int h, int pitch, const uint16_t *under) {
+    Uint64 t0 = SDL_GetTicksNS();
+    present_hybrid_impl(pix, w, h, pitch, under);
+    g_t_present_ns += SDL_GetTicksNS() - t0;
+}
+static void present_hybrid_impl(const uint16_t *pix, int w, int h, int pitch, const uint16_t *under) {
 #if TARGET_OS_IPHONE
     if (frame_held()) return;
 #endif
