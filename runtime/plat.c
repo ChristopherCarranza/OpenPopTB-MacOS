@@ -229,6 +229,8 @@ static void debug_cmds(void) {
                 else if (!strcmp(what, "up")) mouse_button(0, 0);
                 fprintf(out, "dbg mouse %s %.0f %.0f\n", what, mx, my);
             }
+        } else if (!strncmp(line, "now", 3)) {
+            fprintf(out, "dbg now game %u ms\n", now_ms());
         } else if (!strncmp(line, "touchlog", 8)) {
 #if TARGET_OS_IPHONE
             void touch_debug_log(FILE *); touch_debug_log(out);
@@ -618,15 +620,15 @@ bool app_watch(void *user, SDL_Event *e) {
     return true;
 }
 static void app_pause(void) {
-    void dsound_set_paused(int); void clock_add_pause(uint64_t); uint64_t clock_raw_ms(void);
-    uint64_t t0 = clock_raw_ms();
+    void dsound_set_paused(int); void clock_freeze(int);
+    // The whole game stops: this thread keeps the GIL, so no other guest thread (QMixer's streaming, timers)
+    // runs either, the game clock stands still and audio is paused.
+    clock_freeze(1);
     dsound_set_paused(1);
-    gil_unlock();
     // sleep in the main run loop until iOS brings the app back (app_watch clears the flag from there);
     // SDL's own wait would keep waking up to poll
     while (app_inactive) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, true);
-    gil_lock();
-    clock_add_pause(clock_raw_ms() - t0);
+    clock_freeze(0);
     dsound_set_paused(0);
 }
 #endif

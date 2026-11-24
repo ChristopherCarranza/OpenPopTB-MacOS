@@ -138,7 +138,10 @@ The game paces its frames by polling `GetTickCount` until a deadline (D3D: logic
 - **The game pauses when the app isn't in front** (Control Center, a call, the app switcher, Home).
   - An SDL event watch (`app_watch`) sees the lifecycle events. The main thread then sleeps in the run loop
     (`app_pause`) and audio is paused.
-  - The time away is left out of the game's clock (`clock_add_pause`), so the game doesn't fast-forward.
+  - The main thread keeps the GIL while paused, so every guest thread (QMixer streaming, timers) stops too.
+  - The game clock stands still while paused and continues from there (`clock_freeze` in `runtime/k32.c`). It
+    never jumps: forwards the game would race to catch up, and backwards the QMixer streams replayed the same
+    stretch of sound, which happened with the first version.
   - In the simulator, CPU while paused is about 1.5%.
 - **The audio watchdog checks less often** while the device is healthy (every 125 ms).
 
@@ -156,7 +159,7 @@ of silence from the device, so nothing waits forever; the device takes over agai
 ## Debugging
 `POPTB_DEBUG_CMDS=1` makes the app read commands from `Documents/poptb_cmd.txt` twice a second and
 append results to `Documents/poptb_dbg.txt`: `find X Y T`, `filt X Y T`, `peek ADDR N`,
-`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `mouse down|up|move X Y` (raw left button, game pixels), `edge N`, `finger down|up|move ID X Y [pen]` (inject touches, window points; `pen` = as the Apple Pencil), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `zoomu U` (pinch-zoom position 0..3), `touchlog` (the last 160 touches and what they turned into: clicks, homings, gestures, camera), `dump NAME` (0x400000-0x1000000 to
+`poke ADDR V`, `quad A B C D`, `rect`, `key NAME`, `mouse down|up|move X Y` (raw left button, game pixels), `edge N`, `finger down|up|move ID X Y [pen]` (inject touches, window points; `pen` = as the Apple Pencil), `layout`, `stat` (cursor moves, homings, zoom steps, edge moves, held modifiers), `zoomu U` (pinch-zoom position 0..3), `now` (game clock), `touchlog` (the last 160 touches and what they turned into: clicks, homings, gestures, camera), `dump NAME` (0x400000-0x1000000 to
 `Documents/dump_NAME.bin`, for diffing game state between screens), `stall 1|0` (ignore the audio
 device, to test the stall watchdog). The input script (`--script`) also takes
 `ttap:x,y` (touch tap in game coordinates).
