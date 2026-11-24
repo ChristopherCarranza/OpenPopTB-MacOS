@@ -56,7 +56,7 @@ xcrun devicectl device copy to --device <udid> --domain-type appDataContainer \
 | Tap | left click (on release, so a drag never clicks) |
 | Press and hold (0.5 s) | arms a selection box (a gold ring shows): then drag = box; lift without moving = right click (query) |
 | Two-finger tap | right click |
-| One-finger drag | pan: the world follows the finger 1:1 (3D build; key pulses otherwise). A second finger turns it into a pinch or twist |
+| One-finger drag | pan: the world follows the finger 1:1 (3D build; key pulses otherwise). The game's cursor (and the selected-units count drawn with it) follows the finger, kept off the edge pixels. A second finger turns it into a pinch or twist |
 | Two-finger drag | grab and move the world: the camera follows the fingers 1:1 (3D build, direct camera write; other builds use scroll-key pulses) |
 | Two-finger twist | turn the world like a dial, 1:1 with the fingers (3D build writes the heading directly) |
 | Pinch / spread | zoom out / in with the fingers: the picture scales with the finger spread (3D build, see Direct zoom; other builds step = / - once per 15% of spread) |

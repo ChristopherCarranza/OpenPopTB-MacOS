@@ -906,7 +906,16 @@ static void touch_tick(void) {
         && !di_mouse_btn[0] && !di_mouse_btn[1] && !di_mouse_btn[2]) mods_release();
     // press-and-hold arms a selection box (drag) or a right click (lift without moving); shown by a ring
     if (gesture == G_ONE && !g_moved && !g_long && nfing == 1 && t - g_t0 >= LONG_MS) { g_long = 1; if (rmb_held) rmb_used = 1; }
-    if (gesture == G_ONE && g_pan1 && g_pan1_dirty && nfing >= 1) { g_pan1_dirty = 0; grab_pan(fing[0].x, fing[0].y); }
+    if (gesture == G_ONE && g_pan1 && g_pan1_dirty && nfing >= 1) {
+        g_pan1_dirty = 0;
+        grab_pan(fing[0].x, fing[0].y);
+        // the cursor (and what the game draws with it, e.g. the selected-units count) follows the finger,
+        // kept off the edge pixels so the game's own edge scroll doesn't start; no button is held
+        if (!home_phase) {
+            float gx, gy; win_to_game(fing[0].x, fing[0].y, &gx, &gy); drag_inset(&gx, &gy);
+            cursor_to(gx, gy);
+        }
+    }
     two_finger_tick();
     pan_keys_tick();
     // drag: follow the finger once the press is out (each move in its own input batch)
