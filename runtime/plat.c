@@ -221,6 +221,10 @@ static void debug_cmds(void) {
                 fprintf(out, "dbg finger %s %d%s\n", what, id, kind[0] ? " pen" : "");
             }
 #endif
+        } else if (!strncmp(line, "fdt ", 4)) {
+#if TARGET_OS_IPHONE
+            void touch_debug_fdt(FILE *, int); touch_debug_fdt(out, atoi(line + 4));
+#endif
         } else if (!strncmp(line, "mouse ", 6)) {
             // mouse down|up|move X Y (game pixels): raw left-button drive, for testing drags
             char what[8]; float mx, my;

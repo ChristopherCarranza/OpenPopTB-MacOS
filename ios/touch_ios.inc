@@ -64,6 +64,14 @@ static void haptic(const char *why) { tlogf("haptic %s", why); ios_haptic(HAPTIC
 #define TWIST_PULSE_MS 45
 #define PINCH_STEP 1.15f     // finger spread ratio per zoom step
 #define ZOOM_PULSE_MS 90     // how long one zoom step holds the zoom key
+// fling (3D build): a one-finger pan lifted while moving keeps the world gliding, slowing down
+#define FLING_MIN 250.0f     // game pixels/s at lift for a fling to start
+#define FLING_MAX 2500.0f    // speed cap (game pixels/s)
+#define FLING_TAU 0.35f      // seconds for the speed to drop to 1/e
+#define FLING_STOP 15.0f     // ends below this speed
+#define FLING_CATCH 120.0f   // a touch that stops a fling faster than this doesn't click
+#define FLING_WINDOW_MS 100  // finger movement this recent sets the speed
+#define FLING_IDLE_MS 60     // the finger rested this long before lifting: no fling
 
 // ---- the game's mouse object: cursor at +0x20, clamp rect at +0x38 (x0, y0, x1, y1) ----
 static uint32_t mouse_obj(void) {
@@ -626,6 +634,68 @@ static void drag_edge_tick(uint32_t t) {
     g_drag_scroll_ms += (int)(dt * 1000);
 }
 
+// ---- fling (3D build) ----
+// A one-finger pan records where the finger was (game pixels, SDL event times); lifted while still moving,
+// the camera keeps going at the finger's speed and slows down exponentially, like an iOS scroll view.
+// A touch on the game stops it; a quick tap that stops it doesn't click (no stray move order).
+#define FLING_NS 8
+static struct { uint64_t t; float x, y; } fl_s[FLING_NS];
+static int fl_n;                   // samples recorded (ring of FLING_NS)
+static int fling_on;
+static float fling_vx, fling_vy;   // game pixels/s, finger direction (cam_move units)
+static uint64_t fling_last;        // SDL ns of the last fling step
+static int g_caught;               // this gesture's touch stopped a fast fling
+int g_flings;                      // diagnostics
+static void fling_sample(uint64_t t, float wx, float wy) {
+    float gx, gy; win_to_game(wx, wy, &gx, &gy);
+    int i = fl_n++ % FLING_NS;
+    fl_s[i].t = t; fl_s[i].x = gx; fl_s[i].y = gy;
+}
+static float fling_speed(void) { return SDL_sqrtf(fling_vx * fling_vx + fling_vy * fling_vy); }
+static float fling_stop(const char *why) {   // returns the speed it had
+    if (!fling_on) return 0;
+    float s = fling_speed();
+    fling_on = 0;
+    tlogf("fling stop (%s) at %.0f px/s cam%08x", why, s, tlog_cam());
+    return s;
+}
+static void fling_start(uint64_t t_up) {   // at the lift of a one-finger pan
+    int n = fl_n < FLING_NS ? fl_n : FLING_NS;
+    if (n < 2 || !cam_direct() || !in_level()) return;
+    int newest = (fl_n - 1) % FLING_NS, oldest = newest;
+    if (t_up > fl_s[newest].t && t_up - fl_s[newest].t > (uint64_t)FLING_IDLE_MS * 1000000) {
+        tlogf("fling: finger rested %u ms", (unsigned)((t_up - fl_s[newest].t) / 1000000));
+        return;
+    }
+    for (int k = 1; k < n; k++) {   // the oldest sample still inside the window
+        int i = (fl_n - 1 - k) % FLING_NS;
+        if (fl_s[newest].t - fl_s[i].t > (uint64_t)FLING_WINDOW_MS * 1000000) break;
+        oldest = i;
+    }
+    if (oldest == newest) return;
+    float dt = (float)(fl_s[newest].t - fl_s[oldest].t) / 1e9f;
+    if (dt < 0.008f) return;   // (samples too close together to judge)
+    float vx = (fl_s[newest].x - fl_s[oldest].x) / dt, vy = (fl_s[newest].y - fl_s[oldest].y) / dt;
+    float s = SDL_sqrtf(vx * vx + vy * vy);
+    if (s < FLING_MIN) { tlogf("fling: too slow (%.0f px/s)", s); return; }
+    if (s > FLING_MAX) { vx *= FLING_MAX / s; vy *= FLING_MAX / s; }
+    fling_vx = vx; fling_vy = vy; fling_on = 1; fling_last = SDL_GetTicksNS();
+    g_flings++;
+    tlogf("fling %.0f,%.0f px/s cam%08x", fling_vx, fling_vy, tlog_cam());
+}
+static void fling_tick(void) {
+    if (!fling_on) return;
+    if (!cam_direct() || !in_level()) { fling_stop("left level"); return; }   // (like the pan: also in flyby mode)
+    uint64_t t = SDL_GetTicksNS();
+    if (t <= fling_last) return;   // input is pumped from more than one thread
+    float dt = (float)(t - fling_last) / 1e9f; fling_last = t;
+    if (dt > 0.05f) dt = 0.05f;
+    cam_move(fling_vx * dt, fling_vy * dt);
+    float k = SDL_expf(-dt / FLING_TAU);
+    fling_vx *= k; fling_vy *= k;
+    if (fling_speed() < FLING_STOP) fling_stop("slowed");
+}
+
 // keys for grab panning/turning, from the pulse timers (called every tick)
 static void pan_keys_tick(void) {
     if (!(gesture == G_ONE && g_pan1) && (gesture != G_TWO || (g_two_mode != 2 && g_two_mode != 3))) {
@@ -692,9 +762,11 @@ static void on_finger(const SDL_Event *e) {
             if (nfing) gesture_abandon();
             pen_down = 1;
         } else if (pen_down) { tlogf("  palm ignored"); return; }   // palm rejection: no finger gestures while the pencil touches
+        float caught = fling_stop("touch");   // a touch on the game catches a glide
         if (nfing == 0) {
             fing[nfing++] = (Finger){e->tfinger.fingerID, x, y, x, y};
             gesture = G_ONE; g_moved = g_long = g_pan1 = 0; g_t0 = now_ms(); g_pen1 = is_pen;
+            g_caught = caught > FLING_CATCH; fl_n = 0;
             if (in_level()) ios_haptic_prepare();
             float gx, gy; win_to_game(x, y, &gx, &gy); cursor_to(gx, gy);   // cursor follows the finger (tooltips)
         } else if (nfing == 1 && gesture == G_ONE && !g_drag && !g_pen1) {
@@ -738,7 +810,7 @@ static void on_finger(const SDL_Event *e) {
                     g_px = f->x0; g_py = f->y0;
                 }
             }
-            if (g_pan1) g_pan1_dirty = 1;   // applied once per frame in touch_tick
+            if (g_pan1) { g_pan1_dirty = 1; fling_sample(e->tfinger.timestamp, f->x, f->y); }   // pan applied once per frame in touch_tick
             if (g_drag) {
                 win_to_game(f->x, f->y, &drag_tx, &drag_ty);
                 drag_rx = drag_tx; drag_ry = drag_ty;   // unclamped, for the slow edge scroll
@@ -753,6 +825,7 @@ static void on_finger(const SDL_Event *e) {
     int cancelled = e->type == SDL_EVENT_FINGER_CANCELED;
     if (is_pen) pen_down = 0;
     if (gesture == G_ONE && f != &fing[0]) { finger_drop(e->tfinger.fingerID); return; }   // a stray extra finger
+    float up_x = f->x, up_y = f->y;
     finger_drop(e->tfinger.fingerID);
     switch (gesture) {
     case G_ONE:
@@ -767,9 +840,14 @@ static void on_finger(const SDL_Event *e) {
                 drag_release_ms = now_ms() + SETTLE_MS;
             }
         } else if (g_pan1) {
+            // the last stretch of the drag lands before the fling takes over from it
+            if (g_pan1_dirty) { g_pan1_dirty = 0; grab_pan(up_x, up_y); }
             g_pan1 = 0;
+            if (!cancelled) fling_start(e->tfinger.timestamp);
         } else if (!cancelled && !g_moved && g_long) {
             click(1);   // press-and-hold without moving: right click (query), on lift
+        } else if (!cancelled && !g_moved && g_caught) {
+            tlogf("  tap caught a fling: no click");
         } else if (!cancelled && !g_moved) {
             if (rmb_held) { rmb_used = 1; click(1); }   // R-CLICK held: a tap right-clicks there (query)
             else click(0);
@@ -961,6 +1039,7 @@ static void touch_tick(void) {
         }
     }
     two_finger_tick();
+    fling_tick();
     pan_keys_tick();
     // drag: follow the finger once the press is out (each move in its own input batch)
     if (g_drag && drag_dirty && di_mouse_btn[0] && !home_phase && t - down_ms[0] >= SETTLE_MS) {
@@ -977,13 +1056,20 @@ static void touch_tick(void) {
 }
 
 // debug: inject a finger event (window points), so multi-finger timing can be tested in the simulator
+static uint64_t dbg_finger_ns;
 void touch_debug_finger(int down, int id, float x, float y, int pen) {
     SDL_Event e; memset(&e, 0, sizeof e);
     int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
     e.type = down == 1 ? SDL_EVENT_FINGER_DOWN : down == 0 ? SDL_EVENT_FINGER_UP : SDL_EVENT_FINGER_MOTION;
     e.tfinger.touchID = pen ? SDL_PEN_TOUCHID : 0xD0D0; e.tfinger.fingerID = (SDL_FingerID)(1000 + id);
     e.tfinger.x = x / ww; e.tfinger.y = y / wh;
+    e.common.timestamp = SDL_GetTicksNS() + dbg_finger_ns;   // (a batch arrives at once: "fdt" spaces it out)
     SDL_PushEvent(&e);
+}
+// debug "fdt MS": injected finger events from here on are stamped MS later (fling speed tests)
+void touch_debug_fdt(FILE *out, int ms) {
+    dbg_finger_ns += (uint64_t)ms * 1000000;
+    fprintf(out, "dbg fdt +%d ms (flings so far %d, now %s)\n", ms, g_flings, fling_on ? "gliding" : "still");
 }
 void touch_debug_log(FILE *out) {
     int n = tlog_n < TLOG_N ? tlog_n : TLOG_N;
