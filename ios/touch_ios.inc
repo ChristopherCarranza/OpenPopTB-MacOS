@@ -347,6 +347,9 @@ static void drag_inset(float *x, float *y) {
 static uint32_t drag_release_ms;
 static int g_two_mode;             // two fingers: 0 undecided, 1 pinch (zoom), 2 sideways (rotate)
 static int g_two_dirty;
+static uint64_t g_two_ts;          // SDL time of the latest two-finger motion (fling samples)
+static void fling_sample(uint64_t t, float wx, float wy);
+static void fling_reset(void);
 // zoom steps: a short press of = or - per step; steps in the same direction extend it
 static SDL_Scancode zoom_key; static uint32_t zoom_until;
 int g_zoom_in, g_zoom_out;   // diagnostics (debug "stat")
@@ -435,6 +438,7 @@ static void two_finger_tick(void) {
             // count movement from here: the dead zone travel would otherwise land in one frame as a jump
             g_px = (fing[0].x + fing[1].x) / 2; g_py = (fing[0].y + fing[1].y) / 2;
             g_pa = SDL_atan2f(fing[1].y - fing[0].y, fing[1].x - fing[0].x);
+            if (g_two_mode == 2) { fling_reset(); fling_sample(g_two_ts, g_px, g_py); }
         }
     }
     if (g_two_mode == 1 && zoom_direct() && g_zd0 > 0) {
@@ -459,6 +463,7 @@ static void two_finger_tick(void) {
         #define EXTEND(k, ms) pan_until[k] = (pan_until[k] > t ? pan_until[k] : t) + (ms)
         if (g_two_mode == 2) {
             grab_pan(cx, cy);
+            fling_sample(g_two_ts, cx, cy);   // (the centroid, for a fling when the fingers lift)
         } else if (cam_direct()) {
             // twist, 1:1: turn the heading by exactly the fingers' rotation since the last frame
             float d = a - g_pa;
@@ -635,7 +640,7 @@ static void drag_edge_tick(uint32_t t) {
 }
 
 // ---- fling (3D build) ----
-// A one-finger pan records where the finger was (game pixels, SDL event times); lifted while still moving,
+// A pan (one finger, or two fingers' centroid) records where it was (game pixels, SDL event times); lifted while still moving,
 // the camera keeps going at the finger's speed and slows down exponentially, like an iOS scroll view.
 // A touch on the game stops it; a quick tap that stops it doesn't click (no stray move order).
 #define FLING_NS 8
@@ -646,6 +651,7 @@ static float fling_vx, fling_vy;   // game pixels/s, finger direction (cam_move 
 static uint64_t fling_last;        // SDL ns of the last fling step
 static int g_caught;               // this gesture's touch stopped a fast fling
 int g_flings;                      // diagnostics
+static void fling_reset(void) { fl_n = 0; }
 static void fling_sample(uint64_t t, float wx, float wy) {
     float gx, gy; win_to_game(wx, wy, &gx, &gy);
     int i = fl_n++ % FLING_NS;
@@ -659,7 +665,7 @@ static float fling_stop(const char *why) {   // returns the speed it had
     tlogf("fling stop (%s) at %.0f px/s cam%08x", why, s, tlog_cam());
     return s;
 }
-static void fling_start(uint64_t t_up) {   // at the lift of a one-finger pan
+static void fling_start(uint64_t t_up) {   // at the lift of a pan (one finger, or the first of two)
     int n = fl_n < FLING_NS ? fl_n : FLING_NS;
     if (n < 2 || !cam_direct() || !in_level()) return;
     int newest = (fl_n - 1) % FLING_NS, oldest = newest;
@@ -817,7 +823,7 @@ static void on_finger(const SDL_Event *e) {
                 drag_inset(&drag_tx, &drag_ty); drag_dirty = 1;
             }
         } else if (gesture == G_TWO && nfing == 2) {
-            g_two_dirty = 1;   // judged once per frame in two_finger_tick, after both fingers updated
+            g_two_dirty = 1; g_two_ts = e->tfinger.timestamp;   // judged once per frame in two_finger_tick, after both fingers updated
         }
         return;
     }
@@ -826,6 +832,7 @@ static void on_finger(const SDL_Event *e) {
     if (is_pen) pen_down = 0;
     if (gesture == G_ONE && f != &fing[0]) { finger_drop(e->tfinger.fingerID); return; }   // a stray extra finger
     float up_x = f->x, up_y = f->y;
+    if (gesture == G_TWO && nfing == 2 && g_two_dirty) two_finger_tick();   // the last stretch, both fingers still known
     finger_drop(e->tfinger.fingerID);
     switch (gesture) {
     case G_ONE:
@@ -856,6 +863,9 @@ static void on_finger(const SDL_Event *e) {
         break;
     case G_TWO:
         set_held(0);
+        // a two-finger pan glides on like the one-finger one: judged when the first finger lifts (after that
+        // the centroid would jump to the remaining finger)
+        if (g_two_mode == 2 && !cancelled) fling_start(e->tfinger.timestamp);
         if (!cancelled && !g_moved && now_ms() - g_t0 < 400) {   // two-finger tap: right click between the fingers
             float gx, gy; win_to_game(g_cx0, g_cy0, &gx, &gy); cursor_to(gx, gy); click(1);
         }
